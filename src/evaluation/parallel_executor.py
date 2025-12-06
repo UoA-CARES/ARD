@@ -132,7 +132,8 @@ class ParallelExecutor:
     def build_command(
         self,
         task: TrainingTask,
-        task_params: Dict
+        task_params: Dict,
+        log_name_template: str = "eval_{idx}"
     ) -> List[str]:
         """
         Build the command to execute for a training task.
@@ -146,15 +147,20 @@ class ParallelExecutor:
         """
         run_script = os.path.join(self.docker_dir, "run_remote_pipeline.sh")
 
+        # Build command arguments matching run_remote_pipeline.sh parameters:
+        # $1: ISAACLAB_TASK_NAME - The --task argument for your script
+        # $2: LOCAL_WORKSPACE - Local workspace path
+        # $3: TASK_FOLDER - The folder name of your task (the folder inside isaactasks/)
+        # $4: LOGS_FOLDER_NAME - Path to logs folder on local machine
+        # $5: TASK_TRAINING_CONFIG - Training config (can be empty string)
+        # $6: REMOTE_TARGET - Remote target (user@host)
         cmd = [
             run_script,
             task_params.get('task_name'),
-            task_params.get('task_folder'),
-            task_params.get('docker_name', 'isaac'),
-            task_params.get('logs_folder'),
-            task_params.get('training_config', ''),
             task_params.get('local_workspace'),
-            task_params.get('workspace_dir', '${HOME}/.temp_isaac'),
+            task_params.get('task_folder'),
+            os.path.join(task_params.get('logs_folder'), log_name_template.format(idx=task.idx)),
+            task_params.get('training_config', ''),
             task.machine
         ]
 
@@ -175,7 +181,7 @@ class ParallelExecutor:
         Returns:
             subprocess.Popen object
         """
-        cmd = self.build_command(task, task_params)
+        cmd = self.build_command(task, task_params, log_name_template=task.log_name)
 
         logger.info(f"Starting training for task {task.idx} on {task.machine}")
         logger.debug(f"  Command: {' '.join(cmd)}")
@@ -189,10 +195,10 @@ class ParallelExecutor:
             bufsize=1
         )
         
-        # Stream output in real-time
-        if proc.stdout:
-            for line in proc.stdout:
-                print(f"[Task {task.idx}] {line.rstrip()}")
+        # # Stream output in real-time
+        # if proc.stdout:
+        #     for line in proc.stdout:
+        #         print(f"[Task {task.idx}] {line.rstrip()}")
 
         task.status = TaskStatus.RUNNING
         return proc

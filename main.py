@@ -138,7 +138,7 @@ def main():
 
         # Run refinement loop
         logger.info("Starting refinement loop")
-        logs = []
+        refine_logs = {}
         iteration = int(refine_config.get('iteration'))
         for i in range(1, iteration+1):
             logger.info(f"Refinement iteration {i}/{iteration}")
@@ -153,11 +153,24 @@ def main():
                 raw_response_list.append(raw_response)
 
             logger.info("Evaluating reward functions")
-            best_eval = evaluator.evaluate(reward_func_list, logs=logs, task_yaml=task_yaml)
 
+            # Create a copy of task_yaml for this iteration with modified logs_path
+            iter_task_yaml = task_yaml.copy()
+            iter_task_yaml['logs_path'] = os.path.join(task_yaml.get('logs_path'), f'iter_{i}')
+            
+            logger.info(f"Evaluating {len(reward_func_list)} reward functions for iteration {i}")
+            best_run, logs = evaluator.evaluate(reward_func_list, task_yaml=iter_task_yaml, log_name_template="run_{idx}")
+            logger.info(f"Best run index: {best_run['idx']}")
+            refine_logs[f'iteration_{i}/run'] = [best_run, logs, reward_func_list, raw_response_list]
+            
+            logger.info(f"Running {refine_config.get('num_eval')} evaluation runs with best reward function")
+            best_eval, logs = evaluator.evaluate([reward_func_list[best_run["idx"]]]*refine_config.get('num_eval'), task_yaml=iter_task_yaml, log_name_template="eval_{idx}")
+            logger.info(f"Evaluation complete for iteration {i}")
+            refine_logs[f'iteration_{i}/eval'] = [best_eval, logs, reward_func_list, raw_response_list]
+            
             if best_eval:
                 logger.info(f"Max consecutive successes: {best_eval['max_con_successes']}")
-                llm_agent.receive_feedback(best_eval)
+                llm_agent.receive_feedback(refine_logs, iteration=i)
             else:
                 logger.error("Evaluation failed, stopping refinement loop")
                 break

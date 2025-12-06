@@ -10,7 +10,7 @@ used throughout the evaluation pipeline.
 REWARD_FUNCTION_PATTERN = r'@torch\.jit\.script\s*\n*def\s+compute_rewards\s*\([^)]*\).*?return\s+total_reward, reward_components'
 
 # Default log name template for evaluation runs
-LOG_NAME_TEMPLATE = "eval_{idx}"
+# LOG_NAME_TEMPLATE = "eval_{idx}"
 
 # Default TensorBoard metric for evaluation
 PRIMARY_METRIC = "Episode/consecutive_successes"

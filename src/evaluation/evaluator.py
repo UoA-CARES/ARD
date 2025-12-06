@@ -13,6 +13,7 @@ from .workspace_manager import WorkspaceManager
 from .parallel_executor import ParallelExecutor
 from .result_processor import ResultProcessor, EvaluationResult
 from . import config
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,8 @@ class RewardEvaluator:
     def evaluate(
         self,
         reward_funcs: List[str],
-        logs: Optional[List] = None,
-        task_yaml: Optional[Dict] = None
+        task_yaml: Optional[Dict] = None,
+        log_name_template: str = "eval_{idx}"
     ) -> Optional[Dict]:
         """
         Evaluate multiple reward functions in parallel across machine pool.
@@ -126,7 +127,7 @@ class RewardEvaluator:
             reward_funcs: List of reward function code strings to evaluate
             logs: Optional list to append evaluation logs to
             task_yaml: Optional task configuration (if None, uses self.task_config)
-
+            log_name_template: Template for naming log directories (default: "eval_{idx}")
         Returns:
             Dictionary with best evaluation result containing:
             - log_path: Path to the best training log
@@ -135,27 +136,27 @@ class RewardEvaluator:
             - idx: Index of the best reward function
             Returns None if no successful evaluations
         """
-        if logs is None:
-            logs = []
+        logs = []
 
         if not reward_funcs:
             logger.error("No reward functions provided for evaluation")
-            return None
+            return None, logs
 
         logger.info(f"Evaluating {len(reward_funcs)} reward functions across {len(self.machine_pool)} machines")
 
         # Validate workspace before starting
         if not self.workspace_manager.validate_workspace():
             logger.error("Workspace validation failed")
-            return None
+            return None, logs
 
         # Create training tasks
         tasks = self.parallel_executor.create_tasks(
             reward_funcs,
-            log_name_template=config.LOG_NAME_TEMPLATE
+            log_name_template=log_name_template
         )
 
         # Prepare task parameters for remote execution
+        # local_workspace
         task_params = self._build_task_params(task_yaml)
 
         # Execute all tasks in parallel (with workspace prep for each)
@@ -176,6 +177,7 @@ class RewardEvaluator:
             # Spawn the training process
             proc = self.parallel_executor.spawn_process(task, task_params)
             process_results.append((proc, task))
+            time.sleep(1)
 
         # Wait for all processes and collect results
         logger.info("Waiting for all training processes to complete...")
@@ -189,6 +191,7 @@ class RewardEvaluator:
                 eval_result = self.result_processor.process_training_result(
                     log_name=task.log_name,
                     idx=task.idx,
+                    task_params=task_params,
                     machine=task.machine
                 )
 
@@ -197,7 +200,7 @@ class RewardEvaluator:
 
                     # Append to logs if provided
                     logs.append({
-                        'iteration': task.idx,
+                        'samples': task.idx,
                         'machine': task.machine,
                         'result': {
                             'log_path': eval_result.log_path,
@@ -212,7 +215,7 @@ class RewardEvaluator:
         # Select best result
         if not evaluation_results:
             logger.error("No successful evaluations")
-            return None
+            return None, logs
 
         best_result = ResultProcessor.select_best_result(
             evaluation_results,
@@ -232,9 +235,9 @@ class RewardEvaluator:
                 f"{best_result.max_consecutive_successes} consecutive successes"
             )
 
-            return result_dict
+            return result_dict, logs
 
-        return None
+        return None, logs
 
     def _build_task_params(self, task_yaml: Optional[Dict] = None) -> Dict:
         """
@@ -256,7 +259,7 @@ class RewardEvaluator:
             'task_name': task_yaml.get('task'),
             'task_folder': task_yaml.get('workspace'),
             'docker_name': task_yaml.get('docker_name', 'isaac'),
-            'logs_folder': task_yaml.get('logs_path', 'logs/rl_games/default'),
+            'logs_folder': task_yaml.get('logs_path'),
             'training_config': task_yaml.get('config', ''),
             'local_workspace': self.settings_config.get('workspace'),
             'workspace_dir': os.path.expandvars(task_yaml.get('remote_workspace', '${HOME}/.temp_isaac')),

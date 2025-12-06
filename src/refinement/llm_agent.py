@@ -71,7 +71,7 @@ class EurekaAgent():
         return system_content, user_content
 
 
-    def receive_feedback(self, train_result: dict):
+    def receive_feedback(self, refine_logs: dict, iteration: int):
         # refine_record[i].append({
         #     'ckpt': log_path,
         #     'max_con_successes': max_con_successes,
@@ -81,14 +81,14 @@ class EurekaAgent():
         #     "responses_content": raw_response,
         #     "feedback_path": os.path.join(log_path, "training_record", "training_summary.txt")
         # })
-        if train_result is None:
+        if refine_logs is None:
             feedback_content = self.execution_error_feedback(traceback_msg="Code Run cannot be executed due to function signature error! Please re-write an entirely new reward function!")
 
         else:
-            idx = self.best_idx[-1]
-            # TODO: How to write the reward components?
+            # TODO: seed
+            idx = refine_logs[f'iteration_{iteration}/eval'][0]['idx']
             feedback_content = self.policy_feedback
-            with open(self.refine_record[-1][idx]["feedback_path"], "r") as f:
+            with open(os.path.join(refine_logs[f'iteration_{iteration}/eval'][1][idx]["result"]["log_path"], "training_record", "training_summary.txt"), "r") as f:
                 feedback_content += f.read()
             feedback_content += self.code_feedback
 
@@ -96,11 +96,11 @@ class EurekaAgent():
 
         # Add feedback message to the conversation history
         if len(self.messages) == 2:
-            self.messages += [{"role": "assistant", "content": self.refine_record[-1][idx]["responses_content"]}]
+            self.messages += [{"role": "assistant", "content": refine_logs[f'iteration_{iteration}/eval'][3][idx]}]
             self.messages += [{"role": "user", "content": feedback_content}]
         else:
             assert len(self.messages) == 4
-            self.messages[-2] = {"role": "assistant", "content": self.refine_record[-1][idx]["responses_content"]}
+            self.messages[-2] = {"role": "assistant", "content": refine_logs[f'iteration_{iteration}/eval'][3][idx]}
             self.messages[-1] = {"role": "user", "content": feedback_content}
     
 
@@ -146,30 +146,30 @@ class EurekaAgent():
         raise RuntimeError("Failed to generate valid reward function code after 10 attempts.")
     
 
-    def one_move(self, env_evaluation):
-        self.refine_record.append(list())
-        i=0
-        while i < self.samples:
-            # generate a new reward function string
-            reward_func, raw_response = self.func_gen(self.messages)
-            print("The Reward func generated...")
-            # test the generated reward function in the environment
-            train_result = env_evaluation(reward_func, log_name=f"iter_{len(self.refine_record)}_sample{i}")
-            print("evaluated!!")
-            # record it
-            if train_result is not None:
-                self.refine_record[-1].append({
-                    "train_result": train_result,
-                    "prompt": self.messages,
-                    "reward_func": reward_func,
-                    "responses_content": raw_response,
-                    "feedback_path": os.path.join(train_result["log_path"], "training_record", "training_summary.txt")
-                })
-                i += 1
-            print("valid recorded!!")
-        # Finding the best performance among samples
-        best_idx = max(range(self.samples), key=lambda idx: self.refine_record[-1][idx]['train_result']['max_con_successes'])
-        self.best_idx.append(best_idx)
-        # OPTIONAL: Print the best performance
-        print(f"Best performance (sample {best_idx}): {self.refine_record[-1][best_idx]}")
-        return reward_func
+    # def one_move(self, env_evaluation):
+    #     self.refine_record.append(list())
+    #     i=0
+    #     while i < self.samples:
+    #         # generate a new reward function string
+    #         reward_func, raw_response = self.func_gen(self.messages)
+    #         print("The Reward func generated...")
+    #         # test the generated reward function in the environment
+    #         train_result = env_evaluation(reward_func, log_name=f"iter_{len(self.refine_record)}_sample{i}")
+    #         print("evaluated!!")
+    #         # record it
+    #         if train_result is not None:
+    #             self.refine_record[-1].append({
+    #                 "train_result": train_result,
+    #                 "prompt": self.messages,
+    #                 "reward_func": reward_func,
+    #                 "responses_content": raw_response,
+    #                 "feedback_path": os.path.join(train_result["log_path"], "training_record", "training_summary.txt")
+    #             })
+    #             i += 1
+    #         print("valid recorded!!")
+    #     # Finding the best performance among samples
+    #     best_idx = max(range(self.samples), key=lambda idx: self.refine_record[-1][idx]['train_result']['max_con_successes'])
+    #     self.best_idx.append(best_idx)
+    #     # OPTIONAL: Print the best performance
+    #     print(f"Best performance (sample {best_idx}): {self.refine_record[-1][best_idx]}")
+    #     return reward_func

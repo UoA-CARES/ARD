@@ -59,7 +59,7 @@ class ResultProcessor:
         if not self.logs_path:
             raise ValueError("task_config must contain 'logs_path' key")
 
-    def process_training_result(self, log_name: str, idx: int, machine: Optional[str] = None) -> Optional[EvaluationResult]:
+    def process_training_result(self, log_name: str, idx: int, task_params: Dict, machine: Optional[str] = None) -> Optional[EvaluationResult]:
         """
         Process a single training result.
 
@@ -72,22 +72,28 @@ class ResultProcessor:
             EvaluationResult object if successful, None otherwise
         """
         try:
-            # Get the latest log path
-            log_path = self.get_latest_checkpoint_dir()
-
-            if not log_path:
-                logger.error("No checkpoint directory found")
-                return None
-
-            # Rename log directory
-            new_log_path = os.path.join(os.path.dirname(log_path), log_name)
-            if os.path.exists(new_log_path):
-                logger.warning(f"Removing existing log directory: {new_log_path}")
-                shutil.rmtree(new_log_path)
-            os.rename(log_path, new_log_path)
-            log_path = new_log_path
 
             # Create training record directory
+            # self.logs_path = '/home/lee/code/isaactasks/ant/logs/rl_games/ant_direct'
+            # 
+            # log_name = eval_0
+            log_path = os.path.join(
+                task_params["local_workspace"], 
+                task_params["task_folder"], 
+                task_params["logs_folder"], 
+                log_name, 
+                "rl_games", 
+                f"{task_params['task_folder']}_direct"
+                )
+            # Navigate to the single subfolder under log_path
+            if os.path.exists(log_path):
+                subfolders = [f for f in os.listdir(log_path) if os.path.isdir(os.path.join(log_path, f))]
+                if len(subfolders) == 1:
+                    log_path = os.path.join(log_path, subfolders[0])
+                    logger.debug(f"Updated log_path to subfolder: {log_path}")
+                elif len(subfolders) > 1:
+                    logger.warning(f"Multiple subfolders found in {log_path}, using first: {subfolders[0]}")
+                    log_path = os.path.join(log_path, subfolders[0])
             os.makedirs(os.path.join(log_path, "training_record"), exist_ok=True)
 
             # Find TensorBoard path
@@ -130,30 +136,6 @@ class ResultProcessor:
         except Exception as e:
             logger.error(f"Error processing training result {idx}: {e}")
             return None
-
-    def get_latest_checkpoint_dir(self) -> Optional[str]:
-        """
-        Find the most recently created checkpoint directory.
-
-        Returns:
-            Path to the latest checkpoint directory, or None if not found
-        """
-        # Find all timestamp directories
-        timestamp_dirs = glob.glob(f"{self.logs_path}/*")
-
-        # Filter for directories only and sort by creation time (newest first)
-        timestamp_dirs = [d for d in timestamp_dirs if os.path.isdir(d)]
-
-        if not timestamp_dirs:
-            logger.error(f"No directories found in: {self.logs_path}")
-            return None
-
-        timestamp_dirs.sort(key=os.path.getctime, reverse=True)
-
-        # Get the newest directory
-        latest = timestamp_dirs[0]
-        logger.debug(f"Latest checkpoint directory: {latest}")
-        return latest
 
     def read_tensorboard_scalar(self, tb_file: str, tag: str) -> Optional[List]:
         """
@@ -308,16 +290,6 @@ def read_tb(tb_file: str, tag: str) -> Optional[List]:
     """
     processor = ResultProcessor({'logs_path': os.path.dirname(tb_file)})
     return processor.read_tensorboard_scalar(tb_file, tag)
-
-
-def get_latest_checkpoint_dir(logs_path: str) -> Optional[str]:
-    """
-    Legacy function for finding latest checkpoint.
-
-    DEPRECATED: Use ResultProcessor.get_latest_checkpoint_dir() instead.
-    """
-    processor = ResultProcessor({'logs_path': logs_path})
-    return processor.get_latest_checkpoint_dir()
 
 
 def summarize_tensorboard(event_file_path: str, output_txt_path: str):
