@@ -191,14 +191,33 @@ class ParallelExecutor:
         logger.info(f"Starting training for task {task.idx} on machine[{task.machine_id}] ({task.machine})")
         logger.debug(f"  Command: {' '.join(cmd)}")
 
+        # Create log file path for this task
+        log_file_path = os.path.join(
+            task_params.get('local_workspace'),
+            task_params.get('logs_folder'),
+            "command_outputs",
+            f"{task.idx}_subprocess.log"
+        )
+        
+        # Ensure log directory exists
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        
+        # Open log file for writing
+        log_file = open(log_file_path, 'w')
+        
+        logger.info(f"  Logging output to: {log_file_path}")
+        
         proc = subprocess.Popen(
             cmd,
             cwd=self.docker_dir,
-            stdout=subprocess.PIPE,
+            stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1
         )
+        
+        # Store log file handle with process for cleanup
+        proc._log_file = log_file
         
         # # Stream output in real-time
         # if proc.stdout:
