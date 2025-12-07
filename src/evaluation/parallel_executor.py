@@ -12,6 +12,7 @@ import os
 import subprocess
 import logging
 import threading
+import time
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -419,6 +420,10 @@ class ParallelExecutor:
                         machine_results.append(result)
                         continue
 
+                    # Sleep after workspace preparation to ensure files are ready before upload
+                    logger.debug(f"[Machine {machine_id}] Waiting for workspace to stabilize before remote execution")
+                    time.sleep(2.0)
+
                 # Spawn and immediately wait for this task to complete
                 proc = self.spawn_process(task, task_params)
                 result = self.wait_for_process(proc, task)
@@ -442,6 +447,7 @@ class ParallelExecutor:
             )
             thread.start()
             threads.append(thread)
+            time.sleep(30)  # Stagger thread starts slightly
 
         # Wait for all machine threads to complete
         logger.info("Waiting for all machines to complete their task queues...")

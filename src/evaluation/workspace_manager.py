@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import logging
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class WorkspaceManager:
 
             if result.returncode == 0:
                 logger.debug("Workspace reset successful")
+                # Sleep to ensure file system settles after git checkout
+                time.sleep(0.2)
                 return True
             else:
                 logger.error(f"Git checkout failed: {result.stderr}")
