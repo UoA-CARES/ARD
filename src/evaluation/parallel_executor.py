@@ -11,9 +11,11 @@ This module handles:
 import os
 import subprocess
 import logging
+import threading
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class TrainingTask:
     idx: int
     reward_func: str
     machine: str
+    machine_id: int
     log_name: str
     status: TaskStatus = TaskStatus.PENDING
 
@@ -120,11 +123,12 @@ class ParallelExecutor:
                 idx=idx,
                 reward_func=reward_func,
                 machine=machine,
+                machine_id=machine_idx,
                 log_name=log_name
             )
             tasks.append(task)
 
-            logger.debug(f"Task {idx}: {machine} -> {log_name}")
+            logger.debug(f"Task {idx}: machine[{machine_idx}] ({machine}) -> {log_name}")
 
         logger.info(f"Created {len(tasks)} tasks distributed across {len(self.machine_pool)} machines")
         return tasks
@@ -183,7 +187,7 @@ class ParallelExecutor:
         """
         cmd = self.build_command(task, task_params, log_name_template=task.log_name)
 
-        logger.info(f"Starting training for task {task.idx} on {task.machine}")
+        logger.info(f"Starting training for task {task.idx} on machine[{task.machine_id}] ({task.machine})")
         logger.debug(f"  Command: {' '.join(cmd)}")
 
         proc = subprocess.Popen(
@@ -231,17 +235,17 @@ class ParallelExecutor:
 
             if result.success:
                 task.status = TaskStatus.COMPLETED
-                logger.info(f"Task {task.idx} completed successfully on {task.machine}")
+                logger.info(f"Task {task.idx} completed successfully on machine[{task.machine_id}] ({task.machine})")
             else:
                 task.status = TaskStatus.FAILED
-                logger.error(f"Task {task.idx} failed on {task.machine} (exit code: {proc.returncode})")
+                logger.error(f"Task {task.idx} failed on machine[{task.machine_id}] ({task.machine}) (exit code: {proc.returncode})")
                 if stderr:
                     logger.error(f"  stderr: {stderr[:500]}")  # Log first 500 chars
 
             return result
 
         except subprocess.TimeoutExpired:
-            logger.error(f"Task {task.idx} timed out after {self.timeout}s on {task.machine}")
+            logger.error(f"Task {task.idx} timed out after {self.timeout}s on machine[{task.machine_id}] ({task.machine})")
             proc.kill()
             proc.communicate()  # Clean up
 
@@ -352,3 +356,105 @@ class ParallelExecutor:
             logger.info(f"After retry {attempt}: {successful}/{len(results)} successful")
 
         return results
+
+    def execute_sequential_per_machine(
+        self,
+        tasks: List[TrainingTask],
+        task_params: Dict,
+        workspace_prepare_func=None
+    ) -> List[ProcessResult]:
+        """
+        Execute tasks sequentially per machine to prevent memory overflow.
+
+        Tasks on the same machine instance run sequentially (one after another).
+        Tasks on different machine instances run in parallel.
+
+        Args:
+            tasks: List of TrainingTask objects
+            task_params: Dictionary containing task configuration
+            workspace_prepare_func: Optional callback function to prepare workspace
+                                   before each task. Should accept (task) and return bool.
+
+        Returns:
+            List of ProcessResult objects
+        """
+        # Group tasks by machine_id (not machine name, to handle duplicates)
+        machine_tasks = defaultdict(list)
+        for task in tasks:
+            machine_tasks[task.machine_id].append(task)
+
+        logger.info(f"Executing {len(tasks)} tasks sequentially per machine")
+        for machine_id, machine_task_list in machine_tasks.items():
+            machine_name = machine_task_list[0].machine
+            logger.info(f"  Machine[{machine_id}] ({machine_name}): {len(machine_task_list)} tasks queued")
+
+        # Thread-safe storage for results
+        results_lock = threading.Lock()
+        all_results = []
+
+        def execute_machine_queue(machine_id: int, machine_task_list: List[TrainingTask]):
+            """Execute all tasks for a specific machine instance sequentially."""
+            machine_results = []
+            machine_name = machine_task_list[0].machine
+
+            logger.info(f"[Machine {machine_id} ({machine_name})] Starting sequential execution of {len(machine_task_list)} tasks")
+
+            for task in machine_task_list:
+                logger.info(f"[Machine {machine_id}] Processing task {task.idx} (queue position: {machine_task_list.index(task) + 1}/{len(machine_task_list)})")
+
+                # Prepare workspace if callback provided
+                if workspace_prepare_func:
+                    logger.info(f"[Machine {machine_id}] Preparing workspace for task {task.idx}")
+                    success = workspace_prepare_func(task)
+                    if not success:
+                        logger.error(f"[Machine {machine_id}] Failed to prepare workspace for task {task.idx}, skipping")
+                        # Create a failed result
+                        result = ProcessResult(
+                            task=task,
+                            returncode=-1,
+                            stderr="Workspace preparation failed",
+                            success=False
+                        )
+                        task.status = TaskStatus.FAILED
+                        machine_results.append(result)
+                        continue
+
+                # Spawn and immediately wait for this task to complete
+                proc = self.spawn_process(task, task_params)
+                result = self.wait_for_process(proc, task)
+                machine_results.append(result)
+
+                logger.info(f"[Machine {machine_id}] Task {task.idx} {'completed successfully' if result.success else 'failed'}")
+
+            logger.info(f"[Machine {machine_id}] Completed all {len(machine_task_list)} tasks")
+
+            # Store results in thread-safe manner
+            with results_lock:
+                all_results.extend(machine_results)
+
+        # Create and start a thread for each machine instance
+        threads = []
+        for machine_id, machine_task_list in machine_tasks.items():
+            thread = threading.Thread(
+                target=execute_machine_queue,
+                args=(machine_id, machine_task_list),
+                name=f"Machine-{machine_id}"
+            )
+            thread.start()
+            threads.append(thread)
+
+        # Wait for all machine threads to complete
+        logger.info("Waiting for all machines to complete their task queues...")
+        for thread in threads:
+            thread.join()
+
+        # Summary
+        successful = sum(1 for r in all_results if r.success)
+        failed = len(all_results) - successful
+
+        logger.info(f"Sequential execution completed: {successful} successful, {failed} failed")
+
+        # Sort results by task index for consistent ordering
+        all_results.sort(key=lambda r: r.task.idx)
+
+        return all_results

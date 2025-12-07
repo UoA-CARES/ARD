@@ -11,4 +11,4 @@ num_eval: 5 # number of evaluation episodes to run for the final reward
 agent:
   model: "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
   base_url: "https://openrouter.ai/api/v1"
-  sample: 6 # number of Eureka samples to generate per iteration
+  sample: 4 # number of Eureka samples to generate per iteration

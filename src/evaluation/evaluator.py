@@ -13,7 +13,6 @@ from .workspace_manager import WorkspaceManager
 from .parallel_executor import ParallelExecutor
 from .result_processor import ResultProcessor, EvaluationResult
 from . import config
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -156,35 +155,36 @@ class RewardEvaluator:
         )
 
         # Prepare task parameters for remote execution
-        # local_workspace
         task_params = self._build_task_params(task_yaml)
 
-        # Execute all tasks in parallel (with workspace prep for each)
-        process_results = []
-        for task in tasks:
-            # Prepare workspace with specific reward function
+        # Define workspace preparation callback for each task
+        def prepare_workspace_for_task(task):
+            """Prepare workspace for a specific task."""
             logger.info(f"Preparing workspace for task {task.idx}")
             success = self.workspace_manager.prepare_for_evaluation(
                 reward_func_code=task.reward_func,
                 reset=True,
                 pattern=config.REWARD_FUNCTION_PATTERN
             )
-
             if not success:
-                logger.error(f"Failed to prepare workspace for task {task.idx}, skipping")
-                continue
+                logger.error(f"Failed to prepare workspace for task {task.idx}")
+            return success
 
-            # Spawn the training process
-            proc = self.parallel_executor.spawn_process(task, task_params)
-            process_results.append((proc, task))
-            time.sleep(1)
+        # Execute tasks sequentially per machine to prevent memory overflow
+        # Tasks on the same machine run one at a time
+        # Tasks on different machines run in parallel
+        process_results = self.parallel_executor.execute_sequential_per_machine(
+            tasks=tasks,
+            task_params=task_params,
+            workspace_prepare_func=prepare_workspace_for_task
+        )
 
-        # Wait for all processes and collect results
-        logger.info("Waiting for all training processes to complete...")
+        # Process results and collect evaluation data
+        logger.info("Processing training results...")
         evaluation_results = []
 
-        for proc, task in process_results:
-            process_result = self.parallel_executor.wait_for_process(proc, task)
+        for process_result in process_results:
+            task = process_result.task
 
             if process_result.success:
                 # Process the training result
