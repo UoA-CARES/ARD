@@ -194,7 +194,9 @@ class ParallelExecutor:
         # Create log file path for this task
         log_file_path = os.path.join(
             task_params.get('local_workspace'),
+            task_params.get('task_folder'),
             task_params.get('logs_folder'),
+            task.log_name,
             "command_outputs",
             f"{task.idx}_subprocess.log"
         )
@@ -289,93 +291,94 @@ class ParallelExecutor:
                 success=False
             )
 
-    def execute_parallel(
-        self,
-        tasks: List[TrainingTask],
-        task_params: Dict
-    ) -> List[ProcessResult]:
-        """
-        Execute all tasks in parallel and collect results.
+    # def execute_parallel(
+    #     self,
+    #     tasks: List[TrainingTask],
+    #     task_params: Dict
+    # ) -> List[ProcessResult]:
+    #     """
+    #     Execute all tasks in parallel and collect results.
 
-        Args:
-            tasks: List of TrainingTask objects
-            task_params: Dictionary containing task configuration
+    #     Args:
+    #         tasks: List of TrainingTask objects
+    #         task_params: Dictionary containing task configuration
 
-        Returns:
-            List of ProcessResult objects
-        """
-        logger.info(f"Executing {len(tasks)} tasks in parallel")
+    #     Returns:
+    #         List of ProcessResult objects
+    #     """
+    #     logger.info(f"Executing {len(tasks)} tasks in parallel")
 
-        # Spawn all processes
-        processes = []
-        for task in tasks:
-            proc = self.spawn_process(task, task_params)
-            processes.append((proc, task))
+    #     # Spawn all processes
+    #     processes = []
+    #     for task in tasks:
+    #         proc = self.spawn_process(task, task_params)
+    #         processes.append((proc, task))
 
-        # Wait for all processes to complete
-        logger.info("Waiting for all training processes to complete...")
-        results = []
+    #     # Wait for all processes to complete
+    #     logger.info("Waiting for all training processes to complete...")
+    #     results = []
 
-        for proc, task in processes:
-            result = self.wait_for_process(proc, task)
-            results.append(result)
+    #     for proc, task in processes:
+    #         result = self.wait_for_process(proc, task)
+    #         results.append(result)
 
-        # Summary
-        successful = sum(1 for r in results if r.success)
-        failed = len(results) - successful
+    #     # Summary
+    #     successful = sum(1 for r in results if r.success)
+    #     failed = len(results) - successful
 
-        logger.info(f"Parallel execution completed: {successful} successful, {failed} failed")
+    #     logger.info(f"Parallel execution completed: {successful} successful, {failed} failed")
 
-        return results
+    #     return results
 
-    def execute_with_retry(
-        self,
-        tasks: List[TrainingTask],
-        task_params: Dict
-    ) -> List[ProcessResult]:
-        """
-        Execute tasks with retry logic for failures.
+    # def execute_with_retry(
+    #     self,
+    #     tasks: List[TrainingTask],
+    #     task_params: Dict
+    # ) -> List[ProcessResult]:
+    #     """
+    #     Execute tasks with retry logic for failures.
 
-        Args:
-            tasks: List of TrainingTask objects
-            task_params: Dictionary containing task configuration
+    #     Args:
+    #         tasks: List of TrainingTask objects
+    #         task_params: Dictionary containing task configuration
 
-        Returns:
-            List of ProcessResult objects (final results after retries)
-        """
-        results = self.execute_parallel(tasks, task_params)
+    #     Returns:
+    #         List of ProcessResult objects (final results after retries)
+    #     """
+    #     results = self.execute_parallel(tasks, task_params)
 
-        if self.max_retries == 0:
-            return results
+    #     if self.max_retries == 0:
+    #         return results
 
-        # Retry failed tasks
-        for attempt in range(1, self.max_retries + 1):
-            failed_tasks = [r.task for r in results if not r.success]
+    #     # Retry failed tasks
+    #     for attempt in range(1, self.max_retries + 1):
+    #         failed_tasks = [r.task for r in results if not r.success]
 
-            if not failed_tasks:
-                logger.info("All tasks successful, no retries needed")
-                break
+    #         if not failed_tasks:
+    #             logger.info("All tasks successful, no retries needed")
+    #             break
 
-            logger.info(f"Retry attempt {attempt}/{self.max_retries} for {len(failed_tasks)} failed tasks")
+    #         logger.info(f"Retry attempt {attempt}/{self.max_retries} for {len(failed_tasks)} failed tasks")
 
-            # Reset task status
-            for task in failed_tasks:
-                task.status = TaskStatus.PENDING
+    #         # Reset task status
+    #         for task in failed_tasks:
+    #             task.status = TaskStatus.PENDING
 
-            # Re-execute failed tasks
-            retry_results = self.execute_parallel(failed_tasks, task_params)
+    #         # Re-execute failed tasks
+    #         retry_results = self.execute_parallel(failed_tasks, task_params)
 
-            # Update results with retry outcomes
-            result_map = {r.task.idx: r for r in results}
-            for retry_result in retry_results:
-                result_map[retry_result.task.idx] = retry_result
+    #         # Update results with retry outcomes
+    #         result_map = {r.task.idx: r for r in results}
+    #         for retry_result in retry_results:
+    #             result_map[retry_result.task.idx] = retry_result
 
-            results = list(result_map.values())
+    #         results = list(result_map.values())
 
-            successful = sum(1 for r in results if r.success)
-            logger.info(f"After retry {attempt}: {successful}/{len(results)} successful")
+    #         successful = sum(1 for r in results if r.success)
+    #         logger.info(f"After retry {attempt}: {successful}/{len(results)} successful")
 
-        return results
+    #     return results
+
 
     def execute_sequential_per_machine(
         self,

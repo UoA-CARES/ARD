@@ -86,21 +86,25 @@ class EurekaAgent():
 
         else:
             # TODO: seed
-            idx = refine_logs[f'iteration_{iteration}/eval'][0]['idx']
+            best_samples = refine_logs[f'iteration_{iteration}/eval'][0]["idx"]
+            eval_logs = refine_logs[f'iteration_{iteration}/eval'][1]
+            best_eval_idx = next((i for i, log in enumerate(eval_logs) if log.get("samples") == best_samples), None)
+
             feedback_content = self.policy_feedback
-            with open(os.path.join(refine_logs[f'iteration_{iteration}/eval'][1][idx]["result"]["log_path"], "training_record", "training_summary.txt"), "r") as f:
+            with open(os.path.join(eval_logs[best_eval_idx]["result"]["log_path"], "training_record", "training_summary.txt"), "r") as f:
                 feedback_content += f.read()
             feedback_content += self.code_feedback
 
         feedback_content += self.code_output_tip
 
         # Add feedback message to the conversation history
+        best_run_idx = refine_logs[f'iteration_{iteration}/run'][0]['idx']
         if len(self.messages) == 2:
-            self.messages += [{"role": "assistant", "content": refine_logs[f'iteration_{iteration}/eval'][3][idx]}]
+            self.messages += [{"role": "assistant", "content": refine_logs[f'iteration_{iteration}/run'][3][best_run_idx]}]
             self.messages += [{"role": "user", "content": feedback_content}]
         else:
             assert len(self.messages) == 4
-            self.messages[-2] = {"role": "assistant", "content": refine_logs[f'iteration_{iteration}/eval'][3][idx]}
+            self.messages[-2] = {"role": "assistant", "content": refine_logs[f'iteration_{iteration}/run'][3][best_run_idx]}
             self.messages[-1] = {"role": "user", "content": feedback_content}
     
 
