@@ -195,7 +195,7 @@ class ParallelExecutor:
         log_file_path = os.path.join(
             task_params.get('local_workspace'),
             task_params.get('task_folder'),
-            task_params.get('logs_folder'),
+            ".running_outputs",
             task.log_name,
             "command_outputs",
             f"{task.idx}_subprocess.log"
