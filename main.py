@@ -120,6 +120,23 @@ def main():
         refine_config = load_yaml_config(args.refineconfig)
 
         logger.info("Initializing environment and LLM agents")
+        # Check if the workspace is on the correct git branch
+        try:
+            result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=settings_yaml.get('workspace'),
+            capture_output=True,
+            text=True,
+            check=True
+            )
+            current_branch = result.stdout.strip()
+            if current_branch != "workspace":
+                logger.error(f"Git branch must be 'workspace', but current branch is '{current_branch}'")
+                exit(1)
+            logger.info(f"Git branch verified: {current_branch}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to check git branch: {e}")
+            exit(1)
         subprocess.run(["git", "checkout", "."], cwd=settings_yaml.get('workspace'))
 
         # Init LLM agents

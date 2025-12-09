@@ -3,12 +3,12 @@
 
 # Eureka parameters
 iteration: 5 # how many iterations of Eureka to run
-num_eval: 5 # number of evaluation episodes to run for the final reward
+num_eval: 4 # number of evaluation episodes to run for the final reward
 # workspace: "/home/lee/code/isaactasks" # subprocess.run(["git", "checkout", "."], cwd=eval_workspace)
 
 
 # Eureka Agent settings:
 agent:
-  model: "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
+  model: "deepseek/deepseek-chat-v3.1"   #  "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
   base_url: "https://openrouter.ai/api/v1"
   sample: 4 # number of Eureka samples to generate per iteration
