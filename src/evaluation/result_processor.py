@@ -74,7 +74,7 @@ class ResultProcessor:
         try:
 
             # Create training record directory
-            # self.logs_path = '/home/lee/code/isaactasks/ant/logs/rl_games/ant_direct'
+            # self.logs_path = '/home/lee/code/isaactasks/ant/logs/rl_games/ant'
             # 
             # log_name = eval_0
             log_path = os.path.join(
@@ -83,7 +83,7 @@ class ResultProcessor:
                 task_params["logs_folder"], 
                 log_name, 
                 "rl_games", 
-                f"{task_params['task_folder']}_direct"
+                f"{task_params['task_folder']}"
                 )
             # Navigate to the single subfolder under log_path
             if os.path.exists(log_path):

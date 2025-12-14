@@ -37,7 +37,7 @@
             "cwd": "${workspaceFolder}"
         },
         {
-            "name": "Refine (main.py)",
+            "name": "Refine ant(main.py)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
@@ -45,6 +45,18 @@
                 "--refine", 
                 "--refineconfig", "/home/lee/code/Isaac-Sim2Real-Pipeline/configs/refineconfig.yaml", 
                 "--taskconfig", "/home/lee/code/isaactasks/ant/taskconfig.yaml"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Refine shadowhands(main.py)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": [
+                "--refine", 
+                "--refineconfig", "/home/lee/code/Isaac-Sim2Real-Pipeline/configs/refineconfig.yaml", 
+                "--taskconfig", "/home/lee/code/isaactasks/shadow_hand/taskconfig.yaml"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         }

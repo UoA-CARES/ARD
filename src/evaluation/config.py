@@ -20,13 +20,13 @@ METRIC_AGGREGATION = "max"
 
 # Default timeout for training processes (in seconds)
 # 1 hour = 3600 seconds
-DEFAULT_TRAINING_TIMEOUT = 3600
+DEFAULT_TRAINING_TIMEOUT = 360000
 
 # Default number of retry attempts for failed training runs
 DEFAULT_MAX_RETRIES = 0
 
 # Git operations timeout (in seconds)
-GIT_OPERATION_TIMEOUT = 30
+GIT_OPERATION_TIMEOUT = 300
 
 # Remote pipeline script name
 REMOTE_PIPELINE_SCRIPT = "run_remote_pipeline.sh"
