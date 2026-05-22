@@ -83,5 +83,5 @@ RewardEvaluator picks best ──► EurekaAgent.receive_feedback (run phase, th
 - `configs/taskconfig.yaml` — `task`, `env_file` (the injection target), `description`, `max_iterations`.
 - `configs/refineconfig.yaml` — `iteration`, `num_eval`, `base_seed`, and the `agent` (LLM) block.
 
-Secrets come from the environment: `PCS_TOKEN` (coordinator bearer token) and
+Secrets come from the environment: `TOKEN` (coordinator bearer token) and
 `OPENROUTER_API_KEY` (LLM). The training image is assumed prebuilt on the workers.

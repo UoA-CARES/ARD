@@ -80,7 +80,7 @@ Three YAML files under `configs/`:
 Secrets come from the environment, never the configs:
 
 ```bash
-export PCS_TOKEN=pcs_...           # coordinator bearer token
+export TOKEN=pcs_...           # coordinator bearer token
 export OPENROUTER_API_KEY=...      # LLM key
 ```
 

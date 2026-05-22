@@ -20,9 +20,8 @@ description: >
 # RL training iterations (max_epochs) per job.
 max_iterations: 100
 
-# --- other registered tasks (swap `task` + `env_file` to use) ---
-# Isaac-ARD-Humanoid-v0       source/ard_tasks/ard_tasks/tasks/direct/locomotion/locomotion_env.py
-# Isaac-ARD-Franka-Cabinet-v0 source/ard_tasks/ard_tasks/tasks/direct/franka_cabinet/franka_cabinet_env.py
-# Isaac-ARD-Allegro-Repose-v0 source/ard_tasks/ard_tasks/tasks/direct/inhand_manipulation/inhand_manipulation_env.py
-# Isaac-ARD-Forge-NutThread-v0 source/ard_tasks/ard_tasks/tasks/direct/forge/forge_env.py
-# Isaac-ARD-Shadow-Hand-Over-v0 source/ard_tasks/ard_tasks/tasks/direct/shadow_hand_over/shadow_hand_over_env.py
+# To refine a different task without editing this file, use the task's registered
+# name directly — it resolves to that task's ard_meta.yaml inside settings.tasks_repo:
+#   python main.py --refine --task humanoid
+# List available task names with: python scripts/list_envs.py (in ard-isaaclab-tasks),
+# or look under source/ard_tasks/ard_tasks/tasks/direct/*/ard_meta.yaml.

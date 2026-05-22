@@ -4,7 +4,7 @@
 # Path to the ard-isaaclab-tasks checkout — the RL task substrate ARD trains
 # against. Each candidate reward is injected into a task env file inside a fresh
 # copy of this repo, packaged, and submitted to the coordinator.
-tasks_repo: "/home/lee/code/ard-isaaclab-tasks"
+tasks_repo: "/home/rlt/ard-isaaclab-tasks"
 
 # Where ARD downloads artifacts and writes extracted logs / per-run records.
 output_dir: "./runs"
@@ -13,9 +13,9 @@ output_dir: "./runs"
 # training jobs across registered GPU workers. ARD is a pure client of it.
 coordinator:
   base_url: "http://localhost:8000"
-  # Bearer token. Preferred: export PCS_TOKEN. Alternatively set `token:` here
+  # Bearer token. Preferred: export TOKEN. Alternatively set `token:` here
   # (avoid committing secrets). token_env names the env var to read.
-  token_env: "PCS_TOKEN"
+  token_env: "TOKEN"
   # Training image, prebuilt on the workers from ard-isaaclab-tasks/Dockerfile.
   docker_image: "pcs-isaaclab-ard:2.3.2"
   gpus: 1

@@ -30,7 +30,7 @@ DEFAULT_OUTPUT_PATHS = ["logs/"]
 DEFAULT_POLL_INTERVAL = 10.0
 
 # Environment variable that holds the coordinator bearer token.
-DEFAULT_TOKEN_ENV = "PCS_TOKEN"
+DEFAULT_TOKEN_ENV = "TOKEN"
 
 # TensorBoard summary size guidance (load all scalars, no histograms/images).
 from tensorboard.backend.event_processing import event_accumulator as _ea  # noqa: E402

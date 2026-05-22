@@ -41,7 +41,7 @@ class CoordinatorClient:
     Args:
         base_url: Coordinator base URL, e.g. ``http://localhost:8000``.
         token: Bearer token. If None, read from ``token_env`` environment var.
-        token_env: Name of the env var holding the token (default ``PCS_TOKEN``).
+        token_env: Name of the env var holding the token (default ``TOKEN``).
         poll_interval: Seconds between status polls in :meth:`wait_for_job`.
         request_timeout: Per-request HTTP timeout in seconds.
     """
@@ -50,7 +50,7 @@ class CoordinatorClient:
         self,
         base_url: str,
         token: Optional[str] = None,
-        token_env: str = "PCS_TOKEN",
+        token_env: str = "TOKEN",
         poll_interval: float = 10.0,
         request_timeout: float = 60.0,
     ):

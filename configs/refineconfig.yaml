@@ -9,7 +9,7 @@ agent:
 # qwen/qwen3-coder-30b-a3b-instruct
 # deepseek/deepseek-r1
 # anthropic/claude-sonnet-4.5
-  model: "qwen/qwen3-coder-30b-a3b-instruct"   #  "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
+  model: "deepseek/deepseek-v4-pro"   #  "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
   base_url: "https://openrouter.ai/api/v1"
   sample: 16        # reward candidates generated per iteration (the run phase)
   temperature: 0.8  # LLM sampling temperature

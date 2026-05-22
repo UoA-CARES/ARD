@@ -11,9 +11,10 @@ Stage 2 — Automated reward refinement (Eureka-style):
      best candidate's training summary is fed back to the LLM for the next round.
 
 Usage:
-    export PCS_TOKEN=pcs_...                 # coordinator bearer token
+    export TOKEN=pcs_...                 # coordinator bearer token
     export OPENROUTER_API_KEY=...            # LLM key
-    python main.py --refine
+    python main.py --refine                       # uses configs/taskconfig.yaml
+    python main.py --refine --task cartpole        # by dir name; or --task Isaac-ARD-Humanoid-v0
     python main.py --refine --taskconfig configs/taskconfig.yaml \
                    --settings configs/settings.yaml --refineconfig configs/refineconfig.yaml
 """
@@ -49,6 +50,40 @@ def load_yaml_config(config_path):
     except yaml.YAMLError as e:
         logger.error(f"Error parsing {config_path}: {e}")
         raise
+
+
+def resolve_task_config(task_name, tasks_repo):
+    """Resolve a task selector to its ard_meta.yaml path inside tasks_repo.
+
+    Each task directory under ``source/ard_tasks/ard_tasks/tasks/direct/<dir>/``
+    carries an ``ard_meta.yaml`` with the same keys as configs/taskconfig.yaml.
+    ``task_name`` may be either the directory name (e.g. ``locomotion``) or the
+    registered task ID (e.g. ``Isaac-ARD-Humanoid-v0``).
+    """
+    tasks_repo = os.path.abspath(os.path.expanduser(tasks_repo))
+    direct_root = os.path.join(tasks_repo, "source/ard_tasks/ard_tasks/tasks/direct")
+
+    # Map both the directory name and the registered task ID to each meta file.
+    by_dir, by_id = {}, {}
+    for d in sorted(os.listdir(direct_root)):
+        meta_path = os.path.join(direct_root, d, "ard_meta.yaml")
+        if not os.path.isfile(meta_path):
+            continue
+        task_id = (yaml.safe_load(open(meta_path)) or {}).get("task")
+        by_dir[d] = meta_path
+        if task_id:
+            by_id[task_id] = (d, meta_path)
+
+    if task_name in by_dir:
+        return by_dir[task_name]
+    if task_name in by_id:
+        return by_id[task_name][1]
+
+    available = ", ".join(f"{d} ({tid})" for tid, (d, _) in sorted(by_id.items())) or "(none)"
+    raise FileNotFoundError(
+        f"No ard_meta.yaml for task '{task_name}' in {direct_root}. "
+        f"Available: {available}"
+    )
 
 
 def run_refinement(settings, task_cfg, refine_cfg):
@@ -139,14 +174,21 @@ def main():
                         help="Run LLM-based reward-function refinement")
     parser.add_argument("--settings", type=str, default="configs/settings.yaml",
                         help="Path to settings YAML")
+    parser.add_argument("--task", type=str, default=None,
+                        help="Registered task name (resolves its ard_meta.yaml in "
+                             "settings.tasks_repo). Takes precedence over --taskconfig.")
     parser.add_argument("--taskconfig", type=str, default="configs/taskconfig.yaml",
-                        help="Path to task configuration YAML")
+                        help="Path to task configuration YAML (used if --task is omitted)")
     parser.add_argument("--refineconfig", type=str, default="configs/refineconfig.yaml",
                         help="Path to refinement configuration YAML")
     args = parser.parse_args()
 
     settings = load_yaml_config(args.settings)
-    task_cfg = load_yaml_config(args.taskconfig)
+    if args.task:
+        taskconfig_path = resolve_task_config(args.task, settings["tasks_repo"])
+    else:
+        taskconfig_path = args.taskconfig
+    task_cfg = load_yaml_config(taskconfig_path)
 
     if args.refine:
         refine_cfg = load_yaml_config(args.refineconfig)
