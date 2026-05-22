@@ -1,0 +1,28 @@
+# ARD task configuration
+# ----------------------
+# One registered ard-isaaclab-tasks task and the env file ARD edits.
+
+# Registered task ID (see `python scripts/list_envs.py` in ard-isaaclab-tasks).
+task: "Isaac-ARD-Cartpole-v0"
+
+# Env file (relative to settings.tasks_repo) whose `_get_rewards` method is the
+# ARD edit target. The reward is spliced in via AST; the fixed fitness_function
+# logging in this method is preserved automatically.
+env_file: "source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py"
+
+# Natural-language task goal, handed to the LLM reward designer.
+description: >
+  Balance a pole upright on a cart by applying horizontal forces to the cart.
+  Keep the pole as close to vertical and the cart as close to the track centre
+  as possible, for as long as possible, without the pole falling past the
+  vertical limit or the cart leaving its bounds.
+
+# RL training iterations (max_epochs) per job.
+max_iterations: 100
+
+# --- other registered tasks (swap `task` + `env_file` to use) ---
+# Isaac-ARD-Humanoid-v0       source/ard_tasks/ard_tasks/tasks/direct/locomotion/locomotion_env.py
+# Isaac-ARD-Franka-Cabinet-v0 source/ard_tasks/ard_tasks/tasks/direct/franka_cabinet/franka_cabinet_env.py
+# Isaac-ARD-Allegro-Repose-v0 source/ard_tasks/ard_tasks/tasks/direct/inhand_manipulation/inhand_manipulation_env.py
+# Isaac-ARD-Forge-NutThread-v0 source/ard_tasks/ard_tasks/tasks/direct/forge/forge_env.py
+# Isaac-ARD-Shadow-Hand-Over-v0 source/ard_tasks/ard_tasks/tasks/direct/shadow_hand_over/shadow_hand_over_env.py

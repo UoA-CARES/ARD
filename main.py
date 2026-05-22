@@ -1,196 +1,159 @@
 #!/usr/bin/env python3
 """
-Main entry point for the Isaac Sim2Real RL Pipeline.
+Entry point for the ARD (Autonomous RL Designer) reward-refinement pipeline.
 
-# Current only support Rl_Games
-
-This script provides a unified interface to run the complete 3-step pipeline:
-1. Simulation training with Isaac Lab
-2. LLM-based performance refinement using Eureka framework
-3. Sim-to-real transfer with domain randomization and DrEureka
+Stage 2 — Automated reward refinement (Eureka-style):
+  1. An LLM proposes complete `_get_rewards` methods for an ard-isaaclab-tasks env.
+  2. Each candidate is spliced into a fresh copy of the task repo (AST injection)
+     and submitted as a job to the Parallel Coordination System (PCS) coordinator,
+     which trains it (PPO / rl_games) on a GPU worker.
+  3. Finished jobs are scored by the task's fixed `fitness_function` metric; the
+     best candidate's training summary is fed back to the LLM for the next round.
 
 Usage:
-    
-    # Config
-    python main.py * --help  # Show all options
-    python main.py * --version  # Show version info
-    
-    # Stage 1
-    python main.py * --list-template-tasks  # List available official template RL tasks from IsaacLab
-                   * --create   # Create a new custom RL task environment, your will access a interactive shell to define the task
-                   --taskconfig TASKCONFIG  # /home/lee/code/Isaac-Sim2Real-Pipeline/configs/taskconfig.yaml.
-                   --simtrain
-                   --simtest  
-                   --simplay
-
-    # Stage 2
-    python main.py --refine  # Run LLM-based reward function refinement using Eureka framework
-                   --refineconfig REFINECONFIG  # Path to Eureka configuration file
-
-    # Stage 3
-
-
-    * not shown on the prototype
+    export PCS_TOKEN=pcs_...                 # coordinator bearer token
+    export OPENROUTER_API_KEY=...            # LLM key
+    python main.py --refine
+    python main.py --refine --taskconfig configs/taskconfig.yaml \
+                   --settings configs/settings.yaml --refineconfig configs/refineconfig.yaml
 """
 
 import os
-import yaml
 import argparse
-import subprocess
 import logging
-from src.refinement.llm_agent import EurekaAgent
-from src.refinement.files_operation import load_env_cfg, load_prompts
-from src.evaluation import RewardEvaluator
-from src.utils.common import load_machine_pool
+
+import yaml
 from tqdm import tqdm
 
-# Configure logging
+from src.refinement.llm_agent import EurekaAgent
+from src.evaluation import RewardEvaluator
+
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="[%(asctime)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
 
 def load_yaml_config(config_path):
-    """Safely loads a YAML configuration file."""
+    """Safely load a YAML configuration file."""
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
-        logger.info(f"Successfully loaded configuration from: {config_path}")
+        logger.info(f"Loaded configuration: {config_path}")
         return config
     except FileNotFoundError:
-        logger.error(f"The file was not found at {config_path}")
+        logger.error(f"Config file not found: {config_path}")
         raise
     except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML file {config_path}: {e}")
+        logger.error(f"Error parsing {config_path}: {e}")
         raise
 
 
+def run_refinement(settings, task_cfg, refine_cfg):
+    """Run the Eureka refinement loop for one task."""
+    tasks_repo = settings["tasks_repo"]
+    output_dir = os.path.join(
+        os.path.expanduser(settings.get("output_dir", "./runs")), task_cfg["task"]
+    )
+
+    evaluator = RewardEvaluator(
+        tasks_repo=tasks_repo,
+        env_file_rel=task_cfg["env_file"],
+        task=task_cfg["task"],
+        coordinator=settings["coordinator"],
+        output_dir=output_dir,
+    )
+
+    agent = EurekaAgent(
+        task_description=task_cfg["description"],
+        reward_template=evaluator.get_reward_template(),
+        env_source=evaluator.get_env_source(),
+        agent_config=refine_cfg.get("agent", {}),
+    )
+
+    iterations = int(refine_cfg.get("iteration", 1))
+    num_eval = int(refine_cfg.get("num_eval", 1))
+    base_seed = int(refine_cfg.get("base_seed", 0))
+    max_iterations = int(task_cfg.get("max_iterations", 100))
+
+    history = []
+    for i in range(1, iterations + 1):
+        logger.info(f"=== Refinement iteration {i}/{iterations} ===")
+
+        # --- Run phase: generate and evaluate a batch of candidates ----------
+        reward_methods, raw_responses = [], []
+        for _ in tqdm(range(agent.samples), desc=f"iter {i}: generating rewards"):
+            method, raw = agent.func_gen(agent.messages)
+            reward_methods.append(method)
+            raw_responses.append(raw)
+
+        logger.info(f"Evaluating {len(reward_methods)} candidate(s)")
+        best_run, run_logs = evaluator.evaluate(
+            reward_methods, max_iterations=max_iterations, tag_prefix=f"iter{i}_run"
+        )
+
+        if best_run is None:
+            logger.error("No candidate trained successfully; requesting a rewrite")
+            agent.receive_feedback(raw_responses[0], summary_path=None)
+            history.append({"iteration": i, "best_run": None})
+            continue
+
+        best_idx = best_run["idx"]
+        best_method = reward_methods[best_idx]
+        best_response = raw_responses[best_idx]
+        logger.info(
+            f"Best candidate idx={best_idx} fitness={best_run['fitness']:.4f}"
+        )
+
+        # --- Eval phase: re-train the best reward num_eval times to score it --
+        seeds = [base_seed + k for k in range(num_eval)]
+        best_eval, eval_logs = evaluator.evaluate(
+            [best_method] * num_eval,
+            max_iterations=max_iterations,
+            tag_prefix=f"iter{i}_eval",
+            seeds=seeds,
+        )
+
+        summary_path = (best_eval or best_run)["summary_path"]
+        if best_eval:
+            logger.info(f"Eval fitness (best of {num_eval}): {best_eval['fitness']:.4f}")
+        agent.receive_feedback(best_response, summary_path=summary_path)
+
+        history.append({
+            "iteration": i,
+            "best_run": best_run,
+            "best_eval": best_eval,
+            "run_logs": run_logs,
+            "eval_logs": eval_logs,
+        })
+
+    logger.info("Refinement loop complete")
+    return history
 
 
 def main():
-    """
-    Main function to load configurations and run the main logic.
-    """
-    # Set up argument Parser to accept file paths from the command line
-    parser = argparse.ArgumentParser(description="TODO:")
-    parser.add_argument('--taskconfig', type=str, default="configs/taskconfig.yaml", required=False, help="Path to the task configuration YAML file.")
-    parser.add_argument('--simtrain', action='store_true', help="Run simulation training using the provided task configuration")
-    parser.add_argument('--simtest', action='store_true', help="Run simulation testing using the provided task configuration")
-    parser.add_argument('--simplay', action='store_true', help="Run simulation play using the provided task configuration")
-    parser.add_argument('--refine', action='store_true', help="Run LLM-based reward function refinement using Eureka framework")
-    parser.add_argument('--refineconfig', type=str, default="configs/refineconfig.yaml", required=False, help="Path to the refine configuration YAML file.")
-    
+    parser = argparse.ArgumentParser(description="ARD reward-refinement pipeline")
+    parser.add_argument("--refine", action="store_true",
+                        help="Run LLM-based reward-function refinement")
+    parser.add_argument("--settings", type=str, default="configs/settings.yaml",
+                        help="Path to settings YAML")
+    parser.add_argument("--taskconfig", type=str, default="configs/taskconfig.yaml",
+                        help="Path to task configuration YAML")
+    parser.add_argument("--refineconfig", type=str, default="configs/refineconfig.yaml",
+                        help="Path to refinement configuration YAML")
     args = parser.parse_args()
 
-    # Setting Configurations: The localised workspace and python envionment
-    settings_yaml = load_yaml_config("configs/settings.yaml")
-    # Load task configuration
-    task_yaml = load_yaml_config(args.taskconfig)
-    
-    # Build workspace path robustly using os.path.join, expanduser and abspath
-    root = settings_yaml.get('workspace') if settings_yaml else None
-    task_ws = task_yaml.get('workspace') if task_yaml else None
-    if not root or not task_ws:
-        logger.warning("'workspace' missing in settings.yaml or taskconfig.yaml; attempting to join available parts")
-    workspace = os.path.abspath(os.path.expanduser(os.path.join(root or '', task_ws or '')))
-    if not workspace:
-        raise ValueError("Error: unable to determine workspace from settings.yaml and taskconfig.yaml")
-    logger.info(f"Successfully determined local workspace: {workspace}")
-
-    task_config = {
-        "workspace": workspace,
-        "env_cfg_path": os.path.join(workspace, task_yaml.get('env_cfg_path')),
-        "logs_path": os.path.join(workspace, task_yaml.get('logs_path')),
-        "task_description": task_yaml.get('description'),
-    }
-
-    # command parameters
-    # task = task_yaml.get('task')
-    # checkpoint = task_yaml.get('checkpoint') 
-    # whichpython = settings_yaml.get('python_env')
-    # num_envs = task_yaml.get('num_envs')
-    # seed = task_yaml.get('seed')
-    # max_iterations = task_yaml.get('max_iterations')
+    settings = load_yaml_config(args.settings)
+    task_cfg = load_yaml_config(args.taskconfig)
 
     if args.refine:
-        logger.info(f"Loading refine configuration from {args.refineconfig}")
-        refine_config = load_yaml_config(args.refineconfig)
+        refine_cfg = load_yaml_config(args.refineconfig)
+        run_refinement(settings, task_cfg, refine_cfg)
+    else:
+        parser.print_help()
 
-        logger.info("Initializing environment and LLM agents")
-        # Check if the workspace is on the correct git branch
-        try:
-            result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=settings_yaml.get('workspace'),
-            capture_output=True,
-            text=True,
-            check=True
-            )
-            current_branch = result.stdout.strip()
-            if current_branch != "workspace":
-                logger.error(f"Git branch must be 'workspace', but current branch is '{current_branch}'")
-                exit(1)
-            logger.info(f"Git branch verified: {current_branch}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to check git branch: {e}")
-            exit(1)
-        subprocess.run(["git", "checkout", "."], cwd=settings_yaml.get('workspace'))
-
-        # Init LLM agents
-        llm_agent = EurekaAgent(task_config=task_config, agent_config=refine_config.get('agent', {}))
-
-        # Load machine pool
-        machine_pool = load_machine_pool()
-
-        # Initialize RewardEvaluator
-        logger.info("Initializing RewardEvaluator")
-        evaluator = RewardEvaluator(
-            task_config=task_config,
-            settings_config=settings_yaml,
-            machine_pool=machine_pool
-        )
-
-        # Run refinement loop
-        logger.info("Starting refinement loop")
-        refine_logs = {}
-        iteration = int(refine_config.get('iteration'))
-        for i in range(1, iteration+1):
-            logger.info(f"Refinement iteration {i}/{iteration}")
-            logger.info("Generating reward functions with LLM")
-            # Generate reward functions using LLM agent
-            reward_func_list = []
-            raw_response_list = []
-
-            for _ in tqdm(range(llm_agent.samples), desc="Generating reward functions"):
-                reward_func, raw_response = llm_agent.func_gen(llm_agent.messages)
-                reward_func_list.append(reward_func)
-                raw_response_list.append(raw_response)
-
-            logger.info("Evaluating reward functions")
-
-            # Create a copy of task_yaml for this iteration with modified logs_path
-            iter_task_yaml = task_yaml.copy()
-            iter_task_yaml['logs_path'] = os.path.join(task_yaml.get('logs_path'), f'iter_{i}')
-            
-            logger.info(f"Evaluating {len(reward_func_list)} reward functions for iteration {i}")
-            best_run, logs = evaluator.evaluate(reward_func_list, task_yaml=iter_task_yaml, log_name_template="run_{idx}")
-            logger.info(f"Best run index: {best_run['idx']}")
-            refine_logs[f'iteration_{i}/run'] = [best_run, logs, reward_func_list, raw_response_list]
-            
-            logger.info(f"Running {refine_config.get('num_eval')} evaluation runs with best reward function")
-            best_eval, logs = evaluator.evaluate([reward_func_list[best_run["idx"]]]*refine_config.get('num_eval'), task_yaml=iter_task_yaml, log_name_template="eval_{idx}")
-            logger.info(f"Evaluation complete for iteration {i}")
-            refine_logs[f'iteration_{i}/eval'] = [best_eval, logs, reward_func_list, raw_response_list]
-            
-            if best_eval:
-                logger.info(f"Max consecutive successes: {best_eval['max_con_successes']}")
-                llm_agent.receive_feedback(refine_logs, iteration=i)
-            else:
-                logger.error("Evaluation failed, stopping refinement loop")
-                break
 
 if __name__ == "__main__":
     main()

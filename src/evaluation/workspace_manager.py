@@ -1,231 +1,120 @@
 """
-Workspace management module for evaluation.
+Workspace / codebase preparation for coordinator-dispatched evaluation.
 
-This module handles workspace preparation including:
-- Git checkout operations to reset workspace state
-- Reward function code injection into environment files
-- Workspace cleanup and validation
+ARD trains against the ``ard-isaaclab-tasks`` repo. For each candidate reward we
+produce a self-contained ``.tar.gz`` of that repo with the proposed reward spliced
+into the task env file, ready to upload as a PCS job's codebase. The pristine repo
+is never mutated — every candidate gets a fresh copy in a temp directory.
+
+(This replaces the old git-checkout + regex injection against an in-tree Isaac
+project; injection is now AST-based — see :mod:`reward_injection`.)
 """
 
 import os
-import re
-import subprocess
+import shutil
+import tarfile
 import logging
-import time
+import tempfile
 from typing import Optional
 
+from .reward_injection import inject_reward, extract_method_source, RewardInjectionError
+
 logger = logging.getLogger(__name__)
+
+# Files/dirs never shipped in a job codebase (mirrors the PCS test harness).
+_TAR_EXCLUDE = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
 
 
 class WorkspaceManager:
     """
-    Manages workspace preparation for evaluation runs.
-
-    Responsibilities:
-    - Reset workspace to clean state via git checkout
-    - Inject reward function code into environment configuration files
-    - Validate workspace state before training
+    Builds per-candidate job codebases from the ard-isaaclab-tasks repo.
 
     Args:
-        workspace_path: Path to the workspace directory
-        env_cfg_path: Path to the environment configuration file
-
-    Example:
-        >>> manager = WorkspaceManager("/path/to/workspace", "/path/to/env_cfg.py")
-        >>> manager.prepare_for_evaluation(reward_function_code)
+        tasks_repo: Path to the ard-isaaclab-tasks checkout (the pristine source).
+        env_file_rel: Path of the task env file *relative to* ``tasks_repo`` whose
+            ``_get_rewards`` is the injection target,
+            e.g. ``source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py``.
+        build_root: Where to stage per-candidate copies (default: a temp dir).
     """
 
-    # Default regex pattern for matching reward functions
-    DEFAULT_REWARD_PATTERN = r'@torch\.jit\.script\s*\n*def\s+compute_rewards\s*\([^)]*\).*?return\s+total_reward, reward_components'
-
-    def __init__(self, workspace_path: str, env_cfg_path: str):
-        self.workspace_path = workspace_path
-        self.env_cfg_path = env_cfg_path
-
-        if not os.path.exists(workspace_path):
-            raise ValueError(f"Workspace path does not exist: {workspace_path}")
-
-        if not os.path.exists(env_cfg_path):
-            raise ValueError(f"Environment config file does not exist: {env_cfg_path}")
-
-    def reset_workspace(self) -> bool:
-        """
-        Reset workspace to clean state using git checkout.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            logger.info(f"Resetting workspace: {self.workspace_path}")
-            result = subprocess.run(
-                ["git", "checkout", "."],
-                cwd=self.workspace_path,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-
-            if result.returncode == 0:
-                logger.debug("Workspace reset successful")
-                # Sleep to ensure file system settles after git checkout
-                time.sleep(0.2)
-                return True
-            else:
-                logger.error(f"Git checkout failed: {result.stderr}")
-                return False
-
-        except subprocess.TimeoutExpired:
-            logger.error("Git checkout timed out after 30 seconds")
-            return False
-        except Exception as e:
-            logger.error(f"Error resetting workspace: {e}")
-            return False
-
-    def inject_reward_function(
+    def __init__(
         self,
-        reward_func_code: str,
-        pattern: Optional[str] = None
-    ) -> bool:
-        """
-        Inject reward function code into the environment configuration file.
+        tasks_repo: str,
+        env_file_rel: str,
+        build_root: Optional[str] = None,
+    ):
+        self.tasks_repo = os.path.abspath(os.path.expanduser(tasks_repo))
+        self.env_file_rel = env_file_rel
+        self.build_root = build_root or tempfile.mkdtemp(prefix="ard_codebase_")
 
-        Args:
-            reward_func_code: The reward function code to inject
-            pattern: Optional regex pattern to match the function to replace.
-                    If None, uses DEFAULT_REWARD_PATTERN
+        if not os.path.isdir(self.tasks_repo):
+            raise ValueError(f"tasks_repo not found: {self.tasks_repo}")
+        env_abs = os.path.join(self.tasks_repo, env_file_rel)
+        if not os.path.isfile(env_abs):
+            raise ValueError(f"Task env file not found: {env_abs}")
+        os.makedirs(self.build_root, exist_ok=True)
 
-        Returns:
-            True if successful, False otherwise
-        """
-        if pattern is None:
-            pattern = self.DEFAULT_REWARD_PATTERN
-
+    # ------------------------------------------------------------------ checks
+    def validate(self) -> bool:
+        """Confirm the pristine env file parses and exposes the reward template."""
         try:
-            logger.info(f"Injecting reward function into: {self.env_cfg_path}")
-
-            # Read the target script file
-            with open(self.env_cfg_path, 'r') as f:
-                script_content = f.read()
-
-            # Compile the regex pattern
-            regex = re.compile(pattern, re.DOTALL)
-
-            # Check if pattern matches
-            if not regex.search(script_content):
-                logger.error(
-                    f"Could not find target function in {self.env_cfg_path} "
-                    f"using pattern: {pattern[:50]}..."
-                )
-                return False
-
-            # Replace the matched function with new code
-            new_script_content = regex.sub(reward_func_code, script_content, count=1)
-
-            # Verify that replacement actually changed something
-            if new_script_content == script_content:
-                logger.warning("Reward function injection resulted in no changes")
-                return False
-
-            # Write the modified content back
-            with open(self.env_cfg_path, 'w') as f:
-                f.write(new_script_content)
-
-            logger.debug(f"Successfully injected reward function ({len(reward_func_code)} chars)")
+            self.get_reward_template()
             return True
-
-        except FileNotFoundError:
-            logger.error(f"Environment config file not found: {self.env_cfg_path}")
-            return False
-        except Exception as e:
-            logger.error(f"Error injecting reward function: {e}")
+        except (OSError, RewardInjectionError) as e:
+            logger.error(f"Workspace validation failed: {e}")
             return False
 
-    def prepare_for_evaluation(
-        self,
-        reward_func_code: str,
-        reset: bool = True,
-        pattern: Optional[str] = None
-    ) -> bool:
+    def get_reward_template(self) -> str:
+        """Return the pristine ``_get_rewards`` source (used to prompt the LLM)."""
+        with open(os.path.join(self.tasks_repo, self.env_file_rel)) as fh:
+            return extract_method_source(fh.read())
+
+    def get_env_source(self) -> str:
+        """Return the full pristine env-file source (LLM task context)."""
+        with open(os.path.join(self.tasks_repo, self.env_file_rel)) as fh:
+            return fh.read()
+
+    # ------------------------------------------------------------------- build
+    def build_codebase(self, reward_method_src: str, tag: str) -> str:
         """
-        Prepare workspace for evaluation run.
-
-        This is a convenience method that combines reset and injection.
+        Stage a fresh repo copy with ``reward_method_src`` injected and pack it.
 
         Args:
-            reward_func_code: The reward function code to inject
-            reset: Whether to reset workspace before injection (default: True)
-            pattern: Optional regex pattern for function matching
+            reward_method_src: LLM-proposed ``_get_rewards`` method source.
+            tag: Unique label for this candidate (used in dir/tarball names).
 
         Returns:
-            True if preparation successful, False otherwise
+            Absolute path to the produced ``.tar.gz`` codebase.
         """
-        if reset:
-            if not self.reset_workspace():
-                logger.error("Failed to reset workspace")
-                return False
+        stage = os.path.join(self.build_root, f"stage_{tag}")
+        if os.path.exists(stage):
+            shutil.rmtree(stage)
+        logger.info(f"Staging codebase for {tag} -> {stage}")
+        shutil.copytree(
+            self.tasks_repo,
+            stage,
+            ignore=shutil.ignore_patterns(*_TAR_EXCLUDE),
+        )
 
-        if not self.inject_reward_function(reward_func_code, pattern):
-            logger.error("Failed to inject reward function")
-            return False
+        env_abs = os.path.join(stage, self.env_file_rel)
+        with open(env_abs) as fh:
+            original = fh.read()
+        injected = inject_reward(original, reward_method_src)
+        with open(env_abs, "w") as fh:
+            fh.write(injected)
+        logger.debug(f"Injected reward into {env_abs}")
 
-        logger.info("Workspace prepared successfully")
-        return True
+        tarball = os.path.join(self.build_root, f"codebase_{tag}.tar.gz")
+        with tarfile.open(tarball, "w:gz") as tar:
+            # Pack the *contents* so the archive root is the project root.
+            for entry in sorted(os.listdir(stage)):
+                if entry in _TAR_EXCLUDE:
+                    continue
+                tar.add(os.path.join(stage, entry), arcname=entry)
+        logger.info(f"Built codebase tarball: {tarball}")
+        return tarball
 
-    def validate_workspace(self) -> bool:
-        """
-        Validate that workspace is in a good state for evaluation.
-
-        Checks:
-        - Workspace directory exists
-        - Environment config file exists
-        - Workspace is a git repository
-
-        Returns:
-            True if valid, False otherwise
-        """
-        checks = []
-
-        # Check workspace exists
-        if os.path.exists(self.workspace_path):
-            checks.append(("Workspace exists", True))
-        else:
-            checks.append(("Workspace exists", False))
-
-        # Check env config exists
-        if os.path.exists(self.env_cfg_path):
-            checks.append(("Env config exists", True))
-        else:
-            checks.append(("Env config exists", False))
-
-        # Check if git repo
-        git_dir = os.path.join(self.workspace_path, ".git")
-        if os.path.exists(git_dir):
-            checks.append(("Is git repository", True))
-        else:
-            checks.append(("Is git repository", False))
-
-        # Log results
-        all_passed = all(result for _, result in checks)
-        for check_name, result in checks:
-            status = "✓" if result else "✗"
-            logger.debug(f"  {status} {check_name}")
-
-        if all_passed:
-            logger.info("Workspace validation passed")
-        else:
-            logger.error("Workspace validation failed")
-
-        return all_passed
-
-
-# Maintain backward compatibility - standalone function
-def write_code_to_file(func_strings: str, target_script: str, rules: str):
-    """
-    Legacy function for writing code to file.
-
-    DEPRECATED: Use WorkspaceManager.inject_reward_function() instead.
-    """
-    # Extract workspace from target_script path
-    workspace = os.path.dirname(os.path.dirname(target_script))
-    manager = WorkspaceManager(workspace, target_script)
-    return manager.inject_reward_function(func_strings, pattern=rules)
+    def cleanup(self):
+        """Remove the staging directory tree."""
+        if os.path.isdir(self.build_root):
+            shutil.rmtree(self.build_root, ignore_errors=True)

@@ -1,8 +1,8 @@
-Please carefully analyze the policy feedback and provide a new, improved reward function that can better solve the task. Some helpful tips for analyzing the policy feedback:
-    (1) If the consecutive successes are always near zero, then you must rewrite the entire reward function
-    (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
+Please carefully analyze the policy feedback and provide a new, improved `_get_rewards` method. Some helpful tips for analyzing the feedback:
+    (1) If `fitness_function` stays near its initial value (the policy is not learning the task), you must substantially rewrite the reward.
+    (2) If the values for a certain reward component are near identical throughout, then RL is not able to optimize this component as written. You may consider:
         (a) Changing its scale or the value of its temperature parameter
-        (b) Re-writing the reward component 
+        (b) Re-writing the reward component
         (c) Discarding the reward component
-    (3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
-Please analyze each existing reward component in the suggested manner above first, and then write the reward function code. 
+    (3) If some reward component's magnitude is significantly larger than the others, re-scale it into a comparable range.
+Please analyze each existing reward component in the manner above first, and then write the improved `_get_rewards` method.

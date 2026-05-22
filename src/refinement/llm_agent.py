@@ -1,179 +1,154 @@
 """
-LLM Agent Module
+LLM Agent for autonomous reward design (Eureka-style).
 
-Implements the LLM-based agent for autonomous simulation refinement.
-Handles communication with various LLM APIs and prompt engineering.
+The agent proposes complete ``_get_rewards(self)`` methods for an ard-isaaclab-tasks
+environment, then iterates on them using training feedback (per-component scalar
+trends + the fixed ``fitness_function`` evaluation metric). The proposed method is
+spliced into the task env via AST and dispatched for training by the evaluator.
 """
+
 import re
 import os
-from dotenv import load_dotenv
+import logging
+
 from openai import OpenAI
-from src.refinement.files_operation import load_prompts, load_env_cfg
 
-class EurekaAgent():
-    def __init__(self, task_config: dict, agent_config: dict):
-        # task_config = {
-        #     "workspace": workspace,
-        #     "env_cfg_path": os.path.join(workspace, task_yaml.get('env_cfg_path')),
-        #     "logs_path": os.path.join(workspace, task_yaml.get('logs_path')),
-        #     "task_description": task_yaml.get('description'),
-        # }
-        self.prompts_dict = load_prompts()
-        self.task_description = task_config["task_description"]
-        self.env_cfg_dict = load_env_cfg(task_config["env_cfg_path"])
-        self.model = agent_config.get('model')
-        self.base_url = agent_config.get('base_url')
-        self.samples = agent_config.get('sample', 4)
-        # record
-        self.refine_record = []
-        self.best_idx = []
-        # load_dotenv()
+from src.refinement.files_operation import load_prompts
+
+logger = logging.getLogger(__name__)
+
+# A valid proposal must define a `_get_rewards(self ...)` method.
+GET_REWARDS_RE = re.compile(r"def\s+_get_rewards\s*\(\s*self\b", re.DOTALL)
+
+# Code-block extraction patterns, most-specific first.
+_CODE_PATTERNS = [
+    r"```python(.*?)```",
+    r"```(.*?)```",
+]
+
+
+class EurekaAgent:
+    """
+    LLM reward designer.
+
+    Args:
+        task_description: Natural-language description of the task goal.
+        reward_template: Pristine ``_get_rewards`` source (shown as inspiration).
+        env_source: Full task env-class source (LLM task context).
+        agent_config: {model, base_url, sample, temperature?}.
+    """
+
+    def __init__(
+        self,
+        task_description: str,
+        reward_template: str,
+        env_source: str,
+        agent_config: dict,
+    ):
+        self.prompts = load_prompts()
+        self.task_description = task_description
+        self.reward_template = reward_template
+        self.env_source = env_source
+
+        self.model = agent_config.get("model")
+        self.base_url = agent_config.get("base_url")
+        self.samples = int(agent_config.get("sample", 4))
+        self.temperature = float(agent_config.get("temperature", 0.8))
+
         self.api_key = os.getenv("OPENROUTER_API_KEY")
-        self.client = OpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key
+        if not self.api_key:
+            logger.warning("OPENROUTER_API_KEY is not set; LLM calls will fail.")
+        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+
+        self.code_output_tip = self.prompts["code_output_tip"]
+        self.messages = self._init_messages()
+
+    def _init_messages(self):
+        system_content = (
+            self.prompts["initial_system"].format(
+                task_reward_template=self.reward_template
+            )
+            + self.code_output_tip
         )
-        # init messages
-        system_content, user_content = self.init_prompt()
-        self.messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
+        user_content = self.prompts["initial_user"].format(
+            task_obs_code_string=self.env_source,
+            task_description=self.task_description,
+        )
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ]
 
+    def receive_feedback(self, best_response_text: str, summary_path: str = None):
+        """
+        Fold the previous iteration's outcome into the conversation.
 
-    def init_prompt(self):
-        # system prompt
-        self.code_output_tip = self.prompts_dict["code_output_tip"]
-        reward_template = self.env_cfg_dict["reward_code"]
-        initial_system = self.prompts_dict["initial_system"]
-        # feedback
-        self.code_feedback = self.prompts_dict["code_feedback"]
-        self.execution_error_feedback = self.prompts_dict["execution_error_feedback"]
-        self.policy_feedback = self.prompts_dict["policy_feedback"]
-
-        system_content = initial_system.format(task_reward_template=reward_template) + self.code_output_tip
-        # user prompt
-        # task_dict = {
-        #     "code_output_tip": code_output_tip,
-        #     "initial_system": initial_system,
-        #     "initial_user": initial_user,
-        #     "reward_signature": reward_signature,
-        #     "observation_code": observation_code,
-        #     "reward_code": reward_code,
-        #     "intermediate_code": intermediate_code,
-        #     "env_cfg_code": env_cfg_code,
-        #     "env_file_path": env_cfg_path
-        # }
-        initial_user = self.prompts_dict["initial_user"]
-        # task_obs_code_string = (
-        #     self.env_cfg_dict["observation_code"]
-        #     + self.env_cfg_dict["intermediate_code"]
-        # )
-        task_obs_code_string = self.env_cfg_dict["env_code"]
-        user_content= initial_user.format(task_obs_code_string=task_obs_code_string, task_description=self.task_description)
-        return system_content, user_content
-
-
-    def receive_feedback(self, refine_logs: dict, iteration: int):
-        # refine_record[i].append({
-        #     'ckpt': log_path,
-        #     'max_con_successes': max_con_successes,
-        #     'tb_path': tb_path,
-        #     'prompt': llm_agent.messages,
-        #     'reward_func': reward_func,
-        #     "responses_content": raw_response,
-        #     "feedback_path": os.path.join(log_path, "training_record", "training_summary.txt")
-        # })
-        if refine_logs is None:
-            feedback_content = self.execution_error_feedback(traceback_msg="Code Run cannot be executed due to function signature error! Please re-write an entirely new reward function!")
-
+        Args:
+            best_response_text: Raw LLM response that produced the best run.
+            summary_path: Path to that run's training_summary.txt, or None if the
+                iteration failed entirely (signals a hard reset).
+        """
+        if summary_path and os.path.exists(summary_path):
+            with open(summary_path, "r") as f:
+                summary = f.read()
+            feedback_content = (
+                self.prompts["policy_feedback"]
+                + "\n"
+                + summary
+                + "\n"
+                + self.prompts["code_feedback"]
+            )
         else:
-            # TODO: seed
-            best_samples = refine_logs[f'iteration_{iteration}/eval'][0]["idx"]
-            eval_logs = refine_logs[f'iteration_{iteration}/eval'][1]
-            best_eval_idx = next((i for i, log in enumerate(eval_logs) if log.get("samples") == best_samples), None)
-
-            feedback_content = self.policy_feedback
-            with open(os.path.join(eval_logs[best_eval_idx]["result"]["log_path"], "training_record", "training_summary.txt"), "r") as f:
-                feedback_content += f.read()
-            feedback_content += self.code_feedback
-
+            feedback_content = self.prompts["execution_error_feedback"].format(
+                traceback_msg="No reward function trained successfully this "
+                "iteration. Rewrite an entirely new reward function."
+            )
         feedback_content += self.code_output_tip
 
-        # Add feedback message to the conversation history
-        best_run_idx = refine_logs[f'iteration_{iteration}/run'][0]['idx']
+        assistant_msg = {"role": "assistant", "content": best_response_text}
+        user_msg = {"role": "user", "content": feedback_content}
         if len(self.messages) == 2:
-            self.messages += [{"role": "assistant", "content": refine_logs[f'iteration_{iteration}/run'][3][best_run_idx]}]
-            self.messages += [{"role": "user", "content": feedback_content}]
+            self.messages += [assistant_msg, user_msg]
         else:
-            assert len(self.messages) == 4
-            self.messages[-2] = {"role": "assistant", "content": refine_logs[f'iteration_{iteration}/run'][3][best_run_idx]}
-            self.messages[-1] = {"role": "user", "content": feedback_content}
-    
+            # Keep the window to system + initial-user + last assistant/user pair.
+            self.messages[-2] = assistant_msg
+            self.messages[-1] = user_msg
 
     def func_gen(self, messages):
+        """
+        Query the LLM and return (method_source, raw_response).
+
+        Retries until a response contains a valid ``_get_rewards`` method.
+        """
         max_retries = 10
-        retry_count = 0
-        
-        while retry_count < max_retries:
+        for attempt in range(1, max_retries + 1):
             try:
-                # sending the messaages to the LLM API and get the response
                 completion = self.client.chat.completions.create(
-                    extra_headers={},
-                    extra_body={},
                     model=self.model,
-                    temperature=0.8,
+                    temperature=self.temperature,
                     n=1,
-                    messages=messages
+                    messages=messages,
                 )
                 response = completion.choices[0].message.content
-                # filtering the response to extract only the python function code
-                patterns = [
-                    r'```python(.*?)```',
-                    r'```(.*?)```',
-                    r'"""(.*?)"""',
-                    r'""(.*?)""',
-                    r'"(.*?)"',
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, response, re.DOTALL)
-                    if matches:
-                        code_blocks = matches[0].strip()
-                        if re.search(r'@torch\.jit\.script\s*\n*def\s+compute_rewards\s*\([^)]*\).*?return\s+total_reward, reward_components', code_blocks, re.DOTALL):
-                            return code_blocks, response
-                
-                # If we get here, no valid code block was found
-                retry_count += 1
-            except Exception as e:
-                retry_count += 1
-                print(f"Attempt {retry_count} failed: {str(e)}")
-            
-            # If we've exhausted all retries
-        raise RuntimeError("Failed to generate valid reward function code after 10 attempts.")
-    
+                code = self._extract_method(response)
+                if code is not None:
+                    return code, response
+                logger.warning(f"Attempt {attempt}: no valid _get_rewards in response")
+            except Exception as e:  # noqa: BLE001 - surface API/transport errors and retry
+                logger.warning(f"Attempt {attempt} failed: {e}")
+        raise RuntimeError(
+            "Failed to generate a valid _get_rewards method after 10 attempts."
+        )
 
-    # def one_move(self, env_evaluation):
-    #     self.refine_record.append(list())
-    #     i=0
-    #     while i < self.samples:
-    #         # generate a new reward function string
-    #         reward_func, raw_response = self.func_gen(self.messages)
-    #         print("The Reward func generated...")
-    #         # test the generated reward function in the environment
-    #         train_result = env_evaluation(reward_func, log_name=f"iter_{len(self.refine_record)}_sample{i}")
-    #         print("evaluated!!")
-    #         # record it
-    #         if train_result is not None:
-    #             self.refine_record[-1].append({
-    #                 "train_result": train_result,
-    #                 "prompt": self.messages,
-    #                 "reward_func": reward_func,
-    #                 "responses_content": raw_response,
-    #                 "feedback_path": os.path.join(train_result["log_path"], "training_record", "training_summary.txt")
-    #             })
-    #             i += 1
-    #         print("valid recorded!!")
-    #     # Finding the best performance among samples
-    #     best_idx = max(range(self.samples), key=lambda idx: self.refine_record[-1][idx]['train_result']['max_con_successes'])
-    #     self.best_idx.append(best_idx)
-    #     # OPTIONAL: Print the best performance
-    #     print(f"Best performance (sample {best_idx}): {self.refine_record[-1][best_idx]}")
-    #     return reward_func
+    @staticmethod
+    def _extract_method(response: str):
+        """Pull the first fenced code block that defines a _get_rewards method."""
+        for pattern in _CODE_PATTERNS:
+            for match in re.findall(pattern, response, re.DOTALL):
+                block = match.strip()
+                if GET_REWARDS_RE.search(block):
+                    return block
+        # Fall back to the raw response if it itself is a bare method.
+        if GET_REWARDS_RE.search(response):
+            return response.strip()
+        return None

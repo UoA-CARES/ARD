@@ -1,1 +1,5 @@
-The Python script for defining this task is {task_obs_code_string} (The reward function template still included). Write a reward function for the following task: {task_description}.
+Below is the environment class for this task. Read it to see the `self.*` state, the observations, and the `_get_rewards` template you are improving:
+
+{task_obs_code_string}
+
+Write an improved `_get_rewards` method for the following task: {task_description}.

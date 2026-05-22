@@ -1,2 +1,9 @@
-# Isaac Sim2Real RL Pipeline
-
+# ARD (Autonomous RL Designer) — client-side dependencies.
+# Training itself runs on the coordinator's workers (inside the Isaac Lab image),
+# so Isaac Lab / rl_games are NOT required here.
+requests>=2.28        # PCS coordinator HTTP client
+openai>=1.0           # LLM (OpenRouter-compatible) reward generation
+PyYAML>=6.0           # config files
+tensorboard>=2.11     # reading training TensorBoard summaries from artifacts
+numpy>=1.23           # scalar summary statistics
+tqdm>=4.64            # progress bars

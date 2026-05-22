@@ -1,50 +1,48 @@
 """
 Configuration and constants for the evaluation module.
 
-This module contains default values, patterns, and configuration
-used throughout the evaluation pipeline.
+Defaults for coordinator-dispatched evaluation of LLM-proposed reward functions
+against the ard-isaaclab-tasks substrate.
 """
 
-# Default regex pattern for matching reward functions in environment files
-# Matches: @torch.jit.script def compute_rewards(...) ... return total_reward, reward_components
-REWARD_FUNCTION_PATTERN = r'@torch\.jit\.script\s*\n*def\s+compute_rewards\s*\([^)]*\).*?return\s+total_reward, reward_components'
+# Name of the method ARD rewrites in each task env file (the "sole edit target").
+REWARD_METHOD_NAME = "_get_rewards"
 
-# Default log name template for evaluation runs
-# LOG_NAME_TEMPLATE = "eval_{idx}"
+# The fixed evaluation metric the tasks log via
+# ``self.extras["log"]["fitness_function"]``. Matched by suffix against the
+# TensorBoard scalar tags, so any scope prefix the rl_games observer adds still
+# resolves (e.g. "Episode/fitness_function").
+FITNESS_METRIC = "fitness_function"
 
-# Default TensorBoard metric for evaluation
-PRIMARY_METRIC = "Episode/consecutive_successes"
+# Default per-job wall-clock timeout requested from the coordinator (seconds).
+DEFAULT_TRAINING_TIMEOUT = 3600
 
-# Default aggregation method for selecting best result
-METRIC_AGGREGATION = "max"
+# Default number of GPUs requested per job.
+DEFAULT_GPUS = 1
 
-# Default timeout for training processes (in seconds)
-# 1 hour = 3600 seconds
-DEFAULT_TRAINING_TIMEOUT = 360000
+# Default docker image (built from ard-isaaclab-tasks/Dockerfile) the workers run.
+DEFAULT_DOCKER_IMAGE = "pcs-isaaclab-ard:2.3.2"
 
-# Default number of retry attempts for failed training runs
-DEFAULT_MAX_RETRIES = 0
+# Output paths collected by the coordinator into a job's artifacts tarball.
+DEFAULT_OUTPUT_PATHS = ["logs/"]
 
-# Git operations timeout (in seconds)
-GIT_OPERATION_TIMEOUT = 300
+# Seconds between coordinator status polls.
+DEFAULT_POLL_INTERVAL = 10.0
 
-# Remote pipeline script name
-REMOTE_PIPELINE_SCRIPT = "run_remote_pipeline.sh"
+# Environment variable that holds the coordinator bearer token.
+DEFAULT_TOKEN_ENV = "PCS_TOKEN"
 
-# TensorBoard summary size guidance
+# TensorBoard summary size guidance (load all scalars, no histograms/images).
+from tensorboard.backend.event_processing import event_accumulator as _ea  # noqa: E402
+
 TENSORBOARD_SIZE_GUIDANCE = {
-    'compressed_histograms': 0,
-    'images': 0,
-    'audio': 0,
-    'scalars': 0,
-    'histograms': 0,
+    _ea.COMPRESSED_HISTOGRAMS: 0,
+    _ea.IMAGES: 0,
+    _ea.AUDIO: 0,
+    _ea.SCALARS: 0,
+    _ea.HISTOGRAMS: 0,
 }
 
-# Training record subdirectory name
+# Per-run record subdirectory and summary filename.
 TRAINING_RECORD_DIR = "training_record"
-
-# Training summary filename
 TRAINING_SUMMARY_FILE = "training_summary.txt"
-
-# TensorBoard summaries subdirectory
-TENSORBOARD_SUMMARIES_DIR = "summaries"

@@ -1,6 +1,12 @@
-You are a reward engineer trying to write reward functions to solve reinforcement learning tasks as effective as possible.
-Your goal is to write a reward function for the environment that will help the agent learn the task described in text. 
-Template for inspiration, each version should be a unique take on the problem: {task_reward_template}
-Since the reward function will be decorated with @torch.jit.script,
-please make sure that the code is compatible with TorchScript (e.g., use torch tensor instead of numpy array). 
-Make sure any new tensor or variable you introduce is on the same device as the input tensors. 
+You are a reward engineer designing reward functions for reinforcement learning tasks in NVIDIA Isaac Lab (Direct workflow, PyTorch tensors on GPU).
+Your job is to write the `_get_rewards(self)` method of the task's environment class so that a PPO agent learns the task described in text as effectively as possible.
+
+This is the current `_get_rewards` you are improving upon (each version should be a distinct take on the problem):
+{task_reward_template}
+
+Requirements:
+- Write a complete method `def _get_rewards(self) -> torch.Tensor:` (return a dict of per-agent tensors instead if, and only if, the template returns a dict).
+- Compute the reward purely from `self.*` environment state — the same quantities the template and the observations use. Do not reference variables defined outside the method.
+- The returned reward must have shape (num_envs,) (or the per-agent dict that the template returns).
+- Use torch operations and keep every new tensor on the input device (e.g. `device=self.device`). The method runs every simulation step.
+- Do NOT log or compute anything named `fitness_function`: the task's fixed evaluation metric is preserved automatically by the framework and must not appear in your code.
