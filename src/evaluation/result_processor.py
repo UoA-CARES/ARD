@@ -1,21 +1,24 @@
 """
-Result processing for coordinator-dispatched training.
+Artifact capture for coordinator-dispatched training.
 
 Each finished job is downloaded as an artifacts tarball containing the
 ``logs/`` tree produced by ``scripts/train.py`` (rl_games), i.e.
 ``logs/rl_games/<config>/<run>/summaries/events.out.tfevents.*`` plus params and
-checkpoints. This module unpacks that tarball, locates the TensorBoard event
-file, and reads the **fitness** metric the tasks log via
-``self.extras["log"]["fitness_function"]`` — the fixed evaluation signal that
-replaces the old ``consecutive_successes``. It also writes a human-readable
-scalar summary used as LLM feedback.
+checkpoints. This module's job is strictly **capture**: unpack the tarball,
+locate the TensorBoard event file, and write a human-readable scalar summary
+(used as LLM feedback).
+
+It deliberately does **not** read the fitness metric or pick a winner — that
+judgement lives in :mod:`src.evaluation.scorer`. Keeping capture and judgement
+apart lets the evaluator be responsible only for "run it and collect the
+output", while scoring is a separate, swappable step.
 """
 
 import os
 import glob
 import logging
 import tarfile
-from typing import Dict, List, Optional
+from typing import Optional
 from dataclasses import dataclass
 
 import numpy as np
@@ -26,28 +29,25 @@ from . import config
 logger = logging.getLogger(__name__)
 
 
+def load_accumulator(tb_file: str):
+    """Load a TensorBoard event file into an EventAccumulator (shared helper)."""
+    ea = event_accumulator.EventAccumulator(
+        tb_file, size_guidance=config.TENSORBOARD_SIZE_GUIDANCE
+    )
+    ea.Reload()
+    return ea
+
+
 @dataclass
-class EvaluationResult:
-    """Container for a single finished training run."""
+class CapturedArtifacts:
+    """Paths captured from a finished job's artifacts (no metric judgement)."""
     log_path: str            # extracted run directory (holds summaries/, params/, nn/)
-    fitness: float           # max fitness_function over training
     tb_path: str             # path to the TensorBoard event file
     summary_path: str        # path to the generated training_summary.txt
-    idx: int
-    job_id: Optional[str] = None
-
-    def __repr__(self):
-        return (f"EvaluationResult(idx={self.idx}, fitness={self.fitness:.4f}, "
-                f"job_id={self.job_id})")
 
 
 class ResultProcessor:
-    """Unpacks job artifacts and extracts the fitness metric + scalar summary."""
-
-    def __init__(self, fitness_tag: str = config.FITNESS_METRIC):
-        # We match the tag by suffix so whatever scope rl_games/IsaacAlgoObserver
-        # prefixes it with (e.g. "Episode/fitness_function") still resolves.
-        self.fitness_tag = fitness_tag
+    """Unpacks job artifacts and writes the scalar summary used for feedback."""
 
     # ---------------------------------------------------------------- unpack
     @staticmethod
@@ -73,24 +73,25 @@ class ResultProcessor:
         )
         return candidates[0]
 
-    # --------------------------------------------------------------- process
-    def process_artifacts(
-        self, tarball_path: str, dest_dir: str, idx: int, job_id: Optional[str] = None
-    ) -> Optional[EvaluationResult]:
+    # --------------------------------------------------------------- capture
+    def capture(
+        self, tarball_path: str, dest_dir: str
+    ) -> Optional[CapturedArtifacts]:
         """
-        Unpack ``tarball_path`` and build an EvaluationResult.
+        Unpack ``tarball_path`` and write its scalar summary.
 
-        Returns None if no usable TensorBoard logs are found.
+        Returns the captured paths, or None if no usable TensorBoard logs are
+        found. Does not read fitness — see :mod:`src.evaluation.scorer`.
         """
         try:
             self.extract_artifacts(tarball_path, dest_dir)
         except (tarfile.TarError, OSError) as e:
-            logger.error(f"Failed to extract artifacts for idx {idx}: {e}")
+            logger.error(f"Failed to extract artifacts at {dest_dir}: {e}")
             return None
 
         tb_path = self.find_event_file(dest_dir)
         if not tb_path:
-            logger.error(f"No TensorBoard event file in artifacts for idx {idx}")
+            logger.error(f"No TensorBoard event file in artifacts at {dest_dir}")
             return None
 
         run_dir = os.path.dirname(os.path.dirname(tb_path)) \
@@ -102,66 +103,17 @@ class ResultProcessor:
         summary_path = os.path.join(record_dir, config.TRAINING_SUMMARY_FILE)
         self.summarize_tensorboard(tb_path, summary_path)
 
-        fitness = self.read_fitness(tb_path)
-
-        result = EvaluationResult(
-            log_path=run_dir,
-            fitness=fitness,
-            tb_path=tb_path,
-            summary_path=summary_path,
-            idx=idx,
-            job_id=job_id,
+        captured = CapturedArtifacts(
+            log_path=run_dir, tb_path=tb_path, summary_path=summary_path
         )
-        logger.info(f"Processed result: {result}")
-        return result
+        logger.info(f"Captured artifacts: {run_dir}")
+        return captured
 
-    # ------------------------------------------------------------- TB reading
-    def _load_accumulator(self, tb_file: str):
-        ea = event_accumulator.EventAccumulator(
-            tb_file, size_guidance=config.TENSORBOARD_SIZE_GUIDANCE
-        )
-        ea.Reload()
-        return ea
-
-    def _resolve_tag(self, ea, wanted: str) -> Optional[str]:
-        """Resolve ``wanted`` to an actual scalar tag, matching by exact or suffix."""
-        keys = ea.scalars.Keys()
-        if wanted in keys:
-            return wanted
-        suffix = wanted.split("/")[-1]
-        matches = [k for k in keys if k.split("/")[-1] == suffix or k.endswith(suffix)]
-        if matches:
-            if len(matches) > 1:
-                logger.warning(f"Multiple tags match {wanted!r}: {matches}; using {matches[0]}")
-            return matches[0]
-        return None
-
-    def read_fitness(self, tb_file: str) -> float:
-        """Return the max value of the fitness metric over training (0.0 if absent)."""
-        if not os.path.exists(tb_file):
-            logger.error(f"TensorBoard file not found: {tb_file}")
-            return 0.0
-        try:
-            ea = self._load_accumulator(tb_file)
-            tag = self._resolve_tag(ea, self.fitness_tag)
-            if tag is None:
-                logger.warning(
-                    f"Fitness tag {self.fitness_tag!r} not found. "
-                    f"Available: {ea.scalars.Keys()}"
-                )
-                return 0.0
-            events = ea.Scalars(tag)
-            if not events:
-                return 0.0
-            return float(max(e.value for e in events))
-        except Exception as e:  # noqa: BLE001 - TB parsing surfaces many error types
-            logger.error(f"Error reading fitness from {tb_file}: {e}")
-            return 0.0
-
+    # ------------------------------------------------------------- TB summary
     def summarize_tensorboard(self, event_file_path: str, output_txt_path: str):
         """Write a human-readable summary of all scalar metrics for LLM feedback."""
         try:
-            acc = self._load_accumulator(event_file_path)
+            acc = load_accumulator(event_file_path)
             scalar_tags = acc.Tags()["scalars"]
 
             lines = [
@@ -196,14 +148,3 @@ class ResultProcessor:
             logger.info(f"Summary written to {output_txt_path}")
         except Exception as e:  # noqa: BLE001
             logger.error(f"Error summarizing TensorBoard file: {e}")
-
-    # ---------------------------------------------------------------- ranking
-    @staticmethod
-    def select_best_result(results: List[EvaluationResult]) -> Optional[EvaluationResult]:
-        """Return the highest-fitness result, or None if the list is empty."""
-        if not results:
-            logger.warning("No results to select from")
-            return None
-        best = max(results, key=lambda r: r.fitness)
-        logger.info(f"Best result: {best}")
-        return best

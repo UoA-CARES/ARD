@@ -79,7 +79,7 @@ class EurekaAgent:
             {"role": "user", "content": user_content},
         ]
 
-    def receive_feedback(self, best_response_text: str, summary_path: str = None):
+    def receive_feedback(self, best_response_text: str, summary_path: str = None) -> str:
         """
         Fold the previous iteration's outcome into the conversation.
 
@@ -87,6 +87,10 @@ class EurekaAgent:
             best_response_text: Raw LLM response that produced the best run.
             summary_path: Path to that run's training_summary.txt, or None if the
                 iteration failed entirely (signals a hard reset).
+
+        Returns:
+            The exact feedback message text appended to the conversation (so the
+            caller can record what was sent back to the LLM).
         """
         if summary_path and os.path.exists(summary_path):
             with open(summary_path, "r") as f:
@@ -113,6 +117,7 @@ class EurekaAgent:
             # Keep the window to system + initial-user + last assistant/user pair.
             self.messages[-2] = assistant_msg
             self.messages[-1] = user_msg
+        return feedback_content
 
     def func_gen(self, messages):
         """

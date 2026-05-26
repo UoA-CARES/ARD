@@ -1,16 +1,22 @@
 """
 Coordinator-driven evaluation orchestrator.
 
-``RewardEvaluator`` is the high-level entry point ARD's refinement loop calls. For
-a batch of LLM-proposed ``_get_rewards`` methods it:
+``RewardEvaluator`` is the high-level entry point ARD's refinement loop calls.
+Its sole responsibility is **dispatch + capture** — running candidates and
+collecting their output. For a batch of :class:`~src.reward_history.RewardRecord`
+(each carrying a proposed ``_get_rewards`` method) it:
 
 1. Builds one job codebase per candidate (pristine ard-isaaclab-tasks repo + the
    proposed reward spliced in) — :class:`WorkspaceManager`.
 2. Submits every candidate as a job to the PCS coordinator — :class:`CoordinatorClient`.
    The coordinator runs them concurrently across its registered GPU workers.
 3. Waits for all jobs to terminate, downloads each succeeded job's artifacts, and
-   reads its fitness + scalar summary — :class:`ResultProcessor`.
-4. Returns the best candidate by fitness, plus per-candidate logs for LLM feedback.
+   captures its run paths + scalar summary — :class:`ResultProcessor`.
+
+It writes job status and captured artifact paths back onto each record but does
+**not** read fitness or pick a winner — that judgement is
+:class:`~src.evaluation.scorer.FitnessScorer`'s job. This keeps the evaluator a
+pure executor and leaves scoring a separate, swappable step.
 
 This replaces the old SSH machine-pool + ``run_remote_pipeline.sh`` executor: ARD
 is now purely a coordinator client.
@@ -18,13 +24,22 @@ is now purely a coordinator client.
 
 import os
 import logging
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .workspace_manager import WorkspaceManager
 from .reward_injection import RewardInjectionError
 from .result_processor import ResultProcessor
 from . import config
+from src.reward_history import (
+    RewardRecord,
+    STATUS_GEN_FAILED,
+    STATUS_BUILD_FAILED,
+    STATUS_SUBMIT_FAILED,
+    STATUS_SUBMITTED,
+    STATUS_NO_ARTIFACTS,
+    STATUS_NO_METRICS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,54 +128,53 @@ class RewardEvaluator:
 
     def evaluate(
         self,
-        reward_methods: List[str],
+        records: List[RewardRecord],
         max_iterations: int,
-        tag_prefix: str = "run",
-        seeds: Optional[Sequence[Optional[int]]] = None,
-    ):
+    ) -> List[RewardRecord]:
         """
-        Evaluate a batch of candidate ``_get_rewards`` methods.
+        Dispatch a batch of candidate records for training and capture their output.
+
+        Mutates each record in place: sets ``job_id``, ``status``, ``eval_error``
+        and (on success) the captured ``log_path`` / ``tb_path`` / ``summary_path``.
+        Fitness and best-selection are left to :class:`FitnessScorer`.
 
         Args:
-            reward_methods: Candidate method sources (one job each).
+            records: Candidate records. Each must carry ``reward_method`` (records
+                whose generation failed are skipped) and provides ``tag`` / ``seed``.
             max_iterations: Training iterations per job.
-            tag_prefix: Label prefix for this batch (e.g. "iter1_run").
-            seeds: Optional per-candidate seeds (len == reward_methods).
 
         Returns:
-            (best, logs):
-              best — dict for the top candidate or None if all failed.
-              logs — list of per-candidate dicts (idx, job_id, status, fitness,
-                     log_path, summary_path, error).
+            The same ``records`` list, mutated in place.
         """
-        logs: List[Dict] = []
-        if not reward_methods:
-            logger.error("No reward methods provided for evaluation")
-            return None, logs
+        if not records:
+            logger.error("No records provided for evaluation")
+            return records
         if not self.workspace.validate():
             logger.error("Workspace validation failed")
-            return None, logs
-        if seeds is None:
-            seeds = [None] * len(reward_methods)
+            for record in records:
+                if record.has_method:
+                    record.status = STATUS_BUILD_FAILED
+                    record.eval_error = "workspace validation failed"
+            return records
 
-        # 1) Build + submit a job per candidate.
-        job_meta: Dict[str, Dict] = {}     # job_id -> {idx, tag}
-        for idx, method in enumerate(reward_methods):
-            tag = f"{tag_prefix}_{idx}"
-            entry = {"idx": idx, "tag": tag, "job_id": None, "status": "build_failed",
-                     "fitness": float("-inf"), "log_path": None,
-                     "summary_path": None, "error": None}
+        # 1) Build + submit a job per candidate that has a reward method.
+        job_meta: Dict[str, RewardRecord] = {}     # job_id -> record
+        for record in records:
+            if not record.has_method:
+                record.status = STATUS_GEN_FAILED
+                continue
+            tag = record.tag
             try:
-                tarball = self.workspace.build_codebase(method, tag)
+                tarball = self.workspace.build_codebase(record.reward_method, tag)
             except RewardInjectionError as e:
                 logger.error(f"[{tag}] reward injection failed: {e}")
-                entry["error"] = f"injection: {e}"
-                logs.append(entry)
+                record.status = STATUS_BUILD_FAILED
+                record.eval_error = f"injection: {e}"
                 continue
             try:
                 job_id = self.client.submit_job(
                     tarball_path=tarball,
-                    command=self._build_command(max_iterations, seeds[idx]),
+                    command=self._build_command(max_iterations, record.seed),
                     docker_image=self.docker_image,
                     output_paths=self.output_paths,
                     gpus=self.gpus,
@@ -168,63 +182,43 @@ class RewardEvaluator:
                 )
             except CoordinatorError as e:
                 logger.error(f"[{tag}] job submission failed: {e}")
-                entry["status"] = "submit_failed"
-                entry["error"] = f"submit: {e}"
-                logs.append(entry)
+                record.status = STATUS_SUBMIT_FAILED
+                record.eval_error = f"submit: {e}"
                 continue
-            entry["job_id"] = job_id
-            entry["status"] = "submitted"
-            job_meta[job_id] = entry
-            logs.append(entry)
+            record.job_id = job_id
+            record.status = STATUS_SUBMITTED
+            job_meta[job_id] = record
 
         if not job_meta:
             logger.error("No jobs were submitted successfully")
-            return None, logs
+            return records
 
         # 2) Wait for all submitted jobs to finish.
         logger.info(f"Submitted {len(job_meta)} job(s); waiting for completion")
         finished = self.client.wait_for_all(list(job_meta.keys()))
 
-        # 3) Process each finished job.
-        results = []
+        # 3) Capture artifacts for each finished job.
         for job_id, job in finished.items():
-            entry = job_meta[job_id]
-            entry["status"] = job["status"]
+            record = job_meta[job_id]
+            record.status = job["status"]
             if job["status"] != "succeeded":
-                entry["error"] = job.get("error_message") or job["status"]
-                logger.warning(f"[{entry['tag']}] job {job_id} {job['status']}")
+                record.eval_error = job.get("error_message") or job["status"]
+                logger.warning(f"[{record.tag}] job {job_id} {job['status']}")
                 continue
 
-            artifacts_tar = os.path.join(self.output_dir, f"{entry['tag']}.tar.gz")
-            extract_dir = os.path.join(self.output_dir, entry["tag"])
+            artifacts_tar = os.path.join(self.output_dir, f"{record.tag}.tar.gz")
+            extract_dir = os.path.join(self.output_dir, record.tag)
             if not self.client.download_artifacts(job_id, artifacts_tar):
-                entry["status"] = "no_artifacts"
-                entry["error"] = "job produced no artifacts"
+                record.status = STATUS_NO_ARTIFACTS
+                record.eval_error = "job produced no artifacts"
                 continue
-            result = self.processor.process_artifacts(
-                artifacts_tar, extract_dir, idx=entry["idx"], job_id=job_id
-            )
-            if result is None:
-                entry["status"] = "no_metrics"
-                entry["error"] = "no usable TensorBoard logs"
+            captured = self.processor.capture(artifacts_tar, extract_dir)
+            if captured is None:
+                record.status = STATUS_NO_METRICS
+                record.eval_error = "no usable TensorBoard logs"
                 continue
-            entry["fitness"] = result.fitness
-            entry["log_path"] = result.log_path
-            entry["summary_path"] = result.summary_path
-            results.append(result)
+            record.log_path = captured.log_path
+            record.tb_path = captured.tb_path
+            record.summary_path = captured.summary_path
 
-        # 4) Select the best candidate by fitness.
-        if not results:
-            logger.error("No successful evaluations in this batch")
-            return None, logs
-        best = ResultProcessor.select_best_result(results)
-        best_dict = {
-            "idx": best.idx,
-            "fitness": best.fitness,
-            "log_path": best.log_path,
-            "tb_path": best.tb_path,
-            "summary_path": best.summary_path,
-            "job_id": best.job_id,
-        }
-        logger.info(f"Best candidate: idx={best.idx} fitness={best.fitness:.4f}")
-        return best_dict, logs
+        return records

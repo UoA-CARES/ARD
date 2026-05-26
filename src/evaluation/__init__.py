@@ -7,13 +7,15 @@ runs jobs across registered GPU workers. This package owns codebase preparation,
 job dispatch, and result processing.
 
 Main classes:
-- RewardEvaluator:  high-level orchestrator for the evaluation pipeline
+- RewardEvaluator:  dispatch + capture orchestrator (runs jobs, collects output)
+- FitnessScorer:    reads the fitness metric and selects the batch winner
 - CoordinatorClient: HTTP client for the PCS coordinator
 - WorkspaceManager: builds per-candidate job codebases (AST reward injection)
-- ResultProcessor:  unpacks artifacts and extracts the fitness metric
+- ResultProcessor:  unpacks artifacts and writes the scalar summary
 
 Example:
-    >>> from src.evaluation import RewardEvaluator
+    >>> from src.evaluation import RewardEvaluator, FitnessScorer
+    >>> from src.reward_history import RewardHistory
     >>> evaluator = RewardEvaluator(
     ...     tasks_repo="/home/lee/code/ard-isaaclab-tasks",
     ...     env_file_rel="source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py",
@@ -21,23 +23,26 @@ Example:
     ...     coordinator={"base_url": "http://localhost:8000", "token_env": "TOKEN"},
     ...     output_dir="./runs/cartpole",
     ... )
-    >>> best, logs = evaluator.evaluate(reward_methods, max_iterations=100)
+    >>> evaluator.evaluate(records, max_iterations=100)   # dispatch + capture
+    >>> best = FitnessScorer().score_all(records) and FitnessScorer().select_best(records)
 """
 
 from .evaluator import RewardEvaluator
+from .scorer import FitnessScorer
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .workspace_manager import WorkspaceManager
 from .reward_injection import inject_reward, extract_method_source, RewardInjectionError
-from .result_processor import ResultProcessor, EvaluationResult
+from .result_processor import ResultProcessor, CapturedArtifacts
 from . import config
 
 __all__ = [
     "RewardEvaluator",
+    "FitnessScorer",
     "CoordinatorClient",
     "CoordinatorError",
     "WorkspaceManager",
     "ResultProcessor",
-    "EvaluationResult",
+    "CapturedArtifacts",
     "inject_reward",
     "extract_method_source",
     "RewardInjectionError",

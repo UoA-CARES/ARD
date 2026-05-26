@@ -22,12 +22,14 @@ Usage:
 import os
 import argparse
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 from tqdm import tqdm
 
 from src.refinement.llm_agent import EurekaAgent
-from src.evaluation import RewardEvaluator
+from src.evaluation import RewardEvaluator, FitnessScorer
+from src.reward_history import RewardHistory, STATUS_GENERATED, STATUS_GEN_FAILED
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,6 +102,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         coordinator=settings["coordinator"],
         output_dir=output_dir,
     )
+    scorer = FitnessScorer()
 
     agent = EurekaAgent(
         task_description=task_cfg["description"],
@@ -112,57 +115,91 @@ def run_refinement(settings, task_cfg, refine_cfg):
     num_eval = int(refine_cfg.get("num_eval", 1))
     base_seed = int(refine_cfg.get("base_seed", 0))
     max_iterations = int(task_cfg.get("max_iterations", 100))
+    max_workers = min(agent.samples, int(refine_cfg.get("max_workers", agent.samples)))
 
-    history = []
+    # The single source of truth: every candidate's generation -> evaluation ->
+    # judgement -> feedback lifecycle is recorded here, and it is thread-safe so
+    # the generation fan-out below can register records concurrently.
+    history = RewardHistory(output_dir=output_dir)
+
     for i in range(1, iterations + 1):
         logger.info(f"=== Refinement iteration {i}/{iterations} ===")
 
-        # --- Run phase: generate and evaluate a batch of candidates ----------
-        reward_methods, raw_responses = [], []
-        for _ in tqdm(range(agent.samples), desc=f"iter {i}: generating rewards"):
-            method, raw = agent.func_gen(agent.messages)
-            reward_methods.append(method)
-            raw_responses.append(raw)
+        # --- Generation phase: propose a batch of candidates -----------------
+        # func_gen is a network-bound LLM call, so fan the samples out across
+        # threads (the GIL is released during I/O). Threads only read
+        # agent.messages (mutated later by receive_feedback) and each registers
+        # its own record by index, so correctness no longer relies on ordering.
+        def _generate(k):
+            tag = f"iter{i}_run_{k}"
+            try:
+                method, raw = agent.func_gen(agent.messages)
+                history.new_record(
+                    iteration=i, index=k, phase="run", tag=tag,
+                    model=agent.model, temperature=agent.temperature,
+                    reward_method=method, raw_response=raw, status=STATUS_GENERATED,
+                )
+            except RuntimeError as e:
+                logger.error(f"[{tag}] generation failed: {e}")
+                history.new_record(
+                    iteration=i, index=k, phase="run", tag=tag,
+                    model=agent.model, temperature=agent.temperature,
+                    gen_error=str(e), status=STATUS_GEN_FAILED,
+                )
 
-        logger.info(f"Evaluating {len(reward_methods)} candidate(s)")
-        best_run, run_logs = evaluator.evaluate(
-            reward_methods, max_iterations=max_iterations, tag_prefix=f"iter{i}_run"
-        )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            list(tqdm(
+                executor.map(_generate, range(agent.samples)),
+                total=agent.samples,
+                desc=f"iter {i}: generating rewards",
+            ))
 
-        if best_run is None:
+        run_records = history.for_iteration(i, phase="run")
+
+        # --- Run phase: dispatch + capture (evaluator), then judge (scorer) --
+        logger.info(f"Evaluating {sum(r.has_method for r in run_records)} candidate(s)")
+        evaluator.evaluate(run_records, max_iterations=max_iterations)
+        scorer.score_all(run_records)
+        best = scorer.select_best(run_records)
+
+        if best is None:
             logger.error("No candidate trained successfully; requesting a rewrite")
-            agent.receive_feedback(raw_responses[0], summary_path=None)
-            history.append({"iteration": i, "best_run": None})
+            seed_record = next((r for r in run_records if r.raw_response), None)
+            feedback = agent.receive_feedback(
+                seed_record.raw_response if seed_record else "", summary_path=None
+            )
+            if seed_record:
+                history.update(seed_record, feedback_text=feedback)
+            history.save_json()
             continue
 
-        best_idx = best_run["idx"]
-        best_method = reward_methods[best_idx]
-        best_response = raw_responses[best_idx]
-        logger.info(
-            f"Best candidate idx={best_idx} fitness={best_run['fitness']:.4f}"
-        )
+        logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
 
         # --- Eval phase: re-train the best reward num_eval times to score it --
-        seeds = [base_seed + k for k in range(num_eval)]
-        best_eval, eval_logs = evaluator.evaluate(
-            [best_method] * num_eval,
-            max_iterations=max_iterations,
-            tag_prefix=f"iter{i}_eval",
-            seeds=seeds,
-        )
+        eval_records = [
+            history.new_record(
+                iteration=i, index=k, phase="eval", tag=f"iter{i}_eval_{k}",
+                seed=base_seed + k, model=agent.model, temperature=agent.temperature,
+                reward_method=best.reward_method, raw_response=best.raw_response,
+                status=STATUS_GENERATED,
+            )
+            for k in range(num_eval)
+        ]
+        evaluator.evaluate(eval_records, max_iterations=max_iterations)
+        scorer.score_all(eval_records)
+        best_eval = scorer.select_best(eval_records)
 
-        summary_path = (best_eval or best_run)["summary_path"]
+        summary_path = (best_eval or best).summary_path
         if best_eval:
-            logger.info(f"Eval fitness (best of {num_eval}): {best_eval['fitness']:.4f}")
-        agent.receive_feedback(best_response, summary_path=summary_path)
+            logger.info(f"Eval fitness (best of {num_eval}): {best_eval.fitness:.4f}")
 
-        history.append({
-            "iteration": i,
-            "best_run": best_run,
-            "best_eval": best_eval,
-            "run_logs": run_logs,
-            "eval_logs": eval_logs,
-        })
+        # --- Feedback phase: fold the outcome back into the conversation -----
+        # Today only the winner is fed back; because the history retains every
+        # candidate with its summary, feeding the whole batch back later is just
+        # a different read of `run_records` — no structural change needed.
+        feedback = agent.receive_feedback(best.raw_response, summary_path=summary_path)
+        history.update(best, feedback_text=feedback)
+        history.save_json()
 
     logger.info("Refinement loop complete")
     return history
