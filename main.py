@@ -114,7 +114,6 @@ def run_refinement(settings, task_cfg, refine_cfg):
     iterations = int(refine_cfg.get("iteration", 1))
     num_eval = int(refine_cfg.get("num_eval", 1))
     base_seed = int(refine_cfg.get("base_seed", 0))
-    max_iterations = int(task_cfg.get("max_iterations", 100))
     max_workers = min(agent.samples, int(refine_cfg.get("max_workers", agent.samples)))
 
     # The single source of truth: every candidate's generation -> evaluation ->
@@ -158,7 +157,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         # --- Run phase: dispatch + capture (evaluator), then judge (scorer) --
         logger.info(f"Evaluating {sum(r.has_method for r in run_records)} candidate(s)")
-        evaluator.evaluate(run_records, max_iterations=max_iterations)
+        evaluator.evaluate(run_records)
         scorer.score_all(run_records)
         best = scorer.select_best(run_records)
 
@@ -185,7 +184,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
             )
             for k in range(num_eval)
         ]
-        evaluator.evaluate(eval_records, max_iterations=max_iterations)
+        evaluator.evaluate(eval_records)
         scorer.score_all(eval_records)
         best_eval = scorer.select_best(eval_records)
 

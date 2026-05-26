@@ -17,9 +17,6 @@ description: >
   as possible, for as long as possible, without the pole falling past the
   vertical limit or the cart leaving its bounds.
 
-# RL training iterations (max_epochs) per job.
-max_iterations: 100
-
 # To refine a different task without editing this file, use the task's registered
 # name directly — it resolves to that task's ard_meta.yaml inside settings.tasks_repo:
 #   python main.py --refine --task humanoid

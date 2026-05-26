@@ -23,7 +23,7 @@ Example:
     ...     coordinator={"base_url": "http://localhost:8000", "token_env": "TOKEN"},
     ...     output_dir="./runs/cartpole",
     ... )
-    >>> evaluator.evaluate(records, max_iterations=100)   # dispatch + capture
+    >>> evaluator.evaluate(records)   # dispatch + capture
     >>> best = FitnessScorer().score_all(records) and FitnessScorer().select_best(records)
 """
 

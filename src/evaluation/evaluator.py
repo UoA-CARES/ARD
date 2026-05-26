@@ -81,7 +81,7 @@ class RewardEvaluator:
         self.output_paths = coordinator.get("output_paths", config.DEFAULT_OUTPUT_PATHS)
         self.command_template = coordinator.get(
             "command_template",
-            "MAX_ITERATIONS={max_iterations} bash quickstart.sh {task}",
+            "bash quickstart.sh {task}",
         )
 
         self.client = CoordinatorClient(
@@ -119,17 +119,15 @@ class RewardEvaluator:
         return self.workspace.get_env_source()
 
     # ---------------------------------------------------------------- evaluate
-    def _build_command(self, max_iterations: int, seed: Optional[int]) -> str:
+    def _build_command(self, seed: Optional[int]) -> str:
         return self.command_template.format(
             task=self.task,
-            max_iterations=max_iterations,
             seed="" if seed is None else seed,
         )
 
     def evaluate(
         self,
         records: List[RewardRecord],
-        max_iterations: int,
     ) -> List[RewardRecord]:
         """
         Dispatch a batch of candidate records for training and capture their output.
@@ -137,11 +135,12 @@ class RewardEvaluator:
         Mutates each record in place: sets ``job_id``, ``status``, ``eval_error``
         and (on success) the captured ``log_path`` / ``tb_path`` / ``summary_path``.
         Fitness and best-selection are left to :class:`FitnessScorer`.
+        Training length is controlled by each task's ``max_epochs`` in its
+        ``rl_games_ppo_cfg.yaml``.
 
         Args:
             records: Candidate records. Each must carry ``reward_method`` (records
                 whose generation failed are skipped) and provides ``tag`` / ``seed``.
-            max_iterations: Training iterations per job.
 
         Returns:
             The same ``records`` list, mutated in place.
@@ -174,7 +173,7 @@ class RewardEvaluator:
             try:
                 job_id = self.client.submit_job(
                     tarball_path=tarball,
-                    command=self._build_command(max_iterations, record.seed),
+                    command=self._build_command(record.seed),
                     docker_image=self.docker_image,
                     output_paths=self.output_paths,
                     gpus=self.gpus,

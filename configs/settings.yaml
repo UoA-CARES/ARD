@@ -4,7 +4,7 @@
 # Path to the ard-isaaclab-tasks checkout — the RL task substrate ARD trains
 # against. Each candidate reward is injected into a task env file inside a fresh
 # copy of this repo, packaged, and submitted to the coordinator.
-tasks_repo: "/home/lee/code/ard-isaaclab-tasks"
+tasks_repo: "/home/rlt/ard-isaaclab-tasks"
 
 # Where ARD downloads artifacts and writes extracted logs / per-run records.
 output_dir: "./runs"
@@ -24,9 +24,10 @@ coordinator:
   # Output paths the coordinator collects into each job's artifacts tarball.
   output_paths: ["logs/"]
   # Command the worker runs from the codebase root.
-  # Placeholders: {task}, {max_iterations}, {seed} (seed only takes effect if you
-  # reference it — the default quickstart path does not vary the seed; switch to
-  # the train.py form below to vary seeds per evaluation run).
-  command_template: "MAX_ITERATIONS={max_iterations} bash quickstart.sh {task}"
+  # Placeholders: {task}, {seed} (seed only takes effect if you reference it —
+  # the default quickstart path does not vary the seed; switch to the train.py
+  # form below to vary seeds per evaluation run). max_epochs is controlled by
+  # each task's rl_games_ppo_cfg.yaml directly.
+  command_template: "bash quickstart.sh {task}"
   # Seed-aware alternative (calls the trainer directly through Isaac Lab's wrapper):
-  # command_template: "/workspace/isaaclab/isaaclab.sh -p scripts/train.py --task {task} --headless --max_iterations {max_iterations} --seed {seed}"
+  # command_template: "/workspace/isaaclab/isaaclab.sh -p scripts/train.py --task {task} --headless --seed {seed}"
