@@ -16,10 +16,10 @@ ARD's reward-refinement loop was rebuilt around two external repos:
 | Concern | Old | New |
 |---|---|---|
 | Distribution | `ParallelExecutor` SSH'd into `machines_pool.txt` and ran `docker/run_remote_pipeline.sh` per task | Submit jobs to the PCS coordinator (`CoordinatorClient`); it owns scheduling + workers |
-| Reward injection | git-checkout an in-tree project + **regex** replace of `@torch.jit.script compute_rewards` | Copy the tasks repo + **AST** rewrite of `_get_rewards` (`reward_injection.py`) |
+| Reward injection | git-checkout an in-tree project + **regex** replace of a `@torch.jit.script` reward fn | Copy the tasks repo + **AST** rewrite of `_get_rewards` (`reward_injection.py`) |
 | Eval metric | `Episode/consecutive_successes` | `fitness_function` (logged by every task; matched by tag suffix) |
 | Result source | local TensorBoard path on the training host | downloaded job **artifacts tarball** (`logs/…/summaries/`) |
-| LLM target | a `compute_rewards(...)` fn returning `(total_reward, components)` | a whole `_get_rewards(self)` method returning the reward |
+| LLM target | a standalone reward fn returning `(total_reward, components)` | a whole `_get_rewards(self)` method returning the reward |
 
 ## Fitness isolation (task layer)
 

@@ -131,11 +131,20 @@ def run_refinement(settings, task_cfg, refine_cfg):
         # its own record by index, so correctness no longer relies on ordering.
         def _generate(k):
             tag = f"iter{i}_run_{k}"
+            # Distinct seed + steering per candidate so the batch explores varied
+            # reward designs instead of collapsing to one (identical prompts alone
+            # can return identical completions under provider-side determinism).
+            # Directives live in agent_config/exploration_directives.txt.
+            gen_seed = base_seed + i * 1000 + k
+            directive = agent.exploration_directive(k)
             try:
-                method, raw = agent.func_gen(agent.messages)
+                method, raw = agent.func_gen(
+                    agent.messages, seed=gen_seed, directive=directive
+                )
                 history.new_record(
                     iteration=i, index=k, phase="run", tag=tag,
                     model=agent.model, temperature=agent.temperature,
+                    gen_seed=gen_seed, directive=directive,
                     reward_method=method, raw_response=raw, status=STATUS_GENERATED,
                 )
             except RuntimeError as e:
@@ -143,6 +152,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
                 history.new_record(
                     iteration=i, index=k, phase="run", tag=tag,
                     model=agent.model, temperature=agent.temperature,
+                    gen_seed=gen_seed, directive=directive,
                     gen_error=str(e), status=STATUS_GEN_FAILED,
                 )
 

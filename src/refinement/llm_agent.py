@@ -54,6 +54,7 @@ class EurekaAgent:
         self.base_url = agent_config.get("base_url")
         self.samples = int(agent_config.get("sample", 4))
         self.temperature = float(agent_config.get("temperature", 0.8))
+        self.top_p = float(agent_config.get("top_p", 1.0))
 
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
@@ -61,6 +62,17 @@ class EurekaAgent:
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
         self.code_output_tip = self.prompts["code_output_tip"]
+
+        # Per-sample steering so the batch explores structurally different reward
+        # designs instead of i.i.d. rewordings. Index 0 is an unsteered baseline;
+        # the rest come from agent_config/exploration_directives.txt and are cycled
+        # across samples by exploration_directive() in main's generation fan-out.
+        self.directives = [""] + [
+            line.strip()
+            for line in self.prompts["exploration_directives"].splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
         self.messages = self._init_messages()
 
     def _init_messages(self):
@@ -119,18 +131,38 @@ class EurekaAgent:
             self.messages[-1] = user_msg
         return feedback_content
 
-    def func_gen(self, messages):
+    def exploration_directive(self, index: int) -> str:
+        """The steering directive for sample ``index`` (cycles the catalogue)."""
+        return self.directives[index % len(self.directives)]
+
+    @staticmethod
+    def _with_directive(messages, directive: str):
+        """Return a copy of ``messages`` with ``directive`` appended to the last
+        turn. Empty directive returns ``messages`` unchanged (shared, read-only)."""
+        if not directive:
+            return messages
+        msgs = [dict(m) for m in messages]
+        msgs[-1]["content"] = msgs[-1]["content"] + "\n\n" + directive
+        return msgs
+
+    def func_gen(self, messages, seed=None, directive=None):
         """
         Query the LLM and return (method_source, raw_response).
 
-        Retries until a response contains a valid ``_get_rewards`` method.
+        ``seed`` varies the sampler per candidate so identical prompts no longer
+        collapse to identical completions (and stays reproducible). ``directive``
+        is appended to the prompt to steer this candidate toward a distinct reward
+        design. Retries until a response contains a valid ``_get_rewards`` method.
         """
+        messages = self._with_directive(messages, directive)
         max_retries = 10
         for attempt in range(1, max_retries + 1):
             try:
                 completion = self.client.chat.completions.create(
                     model=self.model,
                     temperature=self.temperature,
+                    top_p=self.top_p,
+                    seed=seed,
                     n=1,
                     messages=messages,
                 )
