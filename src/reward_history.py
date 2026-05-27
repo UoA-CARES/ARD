@@ -67,7 +67,6 @@ class RewardRecord:
     model: Optional[str] = None
     temperature: Optional[float] = None
     gen_seed: Optional[int] = None       # LLM sampler seed for this candidate
-    directive: Optional[str] = None      # exploration steering appended to prompt
     raw_response: Optional[str] = None   # verbatim LLM completion
     reward_method: Optional[str] = None  # extracted _get_rewards source
     gen_error: Optional[str] = None      # why generation failed, if it did

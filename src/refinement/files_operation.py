@@ -19,7 +19,6 @@ def load_prompts():
         "code_feedback": "code_feedback.txt",
         "execution_error_feedback": "execution_error_feedback.txt",
         "policy_feedback": "policy_feedback.txt",
-        "exploration_directives": "exploration_directives.txt",
     }
     prompts = {}
     for key, fname in names.items():

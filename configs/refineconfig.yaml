@@ -14,6 +14,5 @@ agent:
   sample: 4        # reward candidates generated per iteration (the run phase)
   temperature: 1.0  # LLM sampling temperature (raised for exploration variety)
   top_p: 0.95       # nucleus sampling; <1.0 widens the candidate distribution
-  # Each candidate also gets a distinct sampler seed and an exploration directive
-  # (see src/refinement/agent_config/exploration_directives.txt) to diversify the
-  # batch beyond what temperature/top_p alone provide.
+  # Each candidate also gets a distinct sampler seed to diversify the batch beyond
+  # what temperature/top_p alone provide.
