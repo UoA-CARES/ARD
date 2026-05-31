@@ -55,8 +55,9 @@ EurekaAgent.func_gen  ──►  N candidate _get_rewards methods
         │
 WorkspaceManager.build_codebase  ──►  per-candidate ard-isaaclab-tasks .tar.gz (reward injected)
         │
-CoordinatorClient.submit_job  ──►  POST /jobs  (command: bash quickstart.sh <TASK>)
-        │                          coordinator schedules across GPU workers
+CoordinatorClient.submit_job  ──►  POST /jobs  (project tarball + env={TASK,SEED})
+        │                          coordinator builds the Dockerfile per job and
+        │                          schedules across GPU workers
 CoordinatorClient.wait_for_all
         │
 CoordinatorClient.download_artifacts  ──►  <tag>.tar.gz
@@ -79,9 +80,12 @@ RewardEvaluator picks best ──► EurekaAgent.receive_feedback (run phase, th
 ## Configuration
 
 - `configs/settings.yaml` — `tasks_repo`, `output_dir`, and the `coordinator` block
-  (`base_url`, `token_env`, `docker_image`, `gpus`, `timeout_seconds`, `command_template`).
+  (`base_url`, `token_env`, `gpus`, `timeout_seconds`, `output_paths`, optional
+  `env`/`build_args`/`command_template`). PCS builds each job's Dockerfile — there
+  is no prebuilt image tag.
 - `configs/taskconfig.yaml` — `task`, `env_file` (the injection target), `description`, `max_iterations`.
 - `configs/refineconfig.yaml` — `iteration`, `num_eval`, `base_seed`, and the `agent` (LLM) block.
 
-Secrets come from the environment: `TOKEN` (coordinator bearer token) and
-`OPENROUTER_API_KEY` (LLM). The training image is assumed prebuilt on the workers.
+Secrets come from the environment: `PCS_TOKEN` (coordinator bearer token) and
+`OPENROUTER_API_KEY` (LLM). Each job's training image is built by the worker from
+the submitted codebase's `Dockerfile` — nothing is prebuilt on the workers.

@@ -41,8 +41,10 @@ One refinement iteration:
 1. **Generate.** The LLM proposes `sample` candidate `_get_rewards(self)` methods.
 2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks`
    via AST and packed into a `.tar.gz` codebase.
-3. **Dispatch.** Each codebase is submitted as a job to the coordinator, which
-   runs them concurrently across its GPU workers (`bash quickstart.sh <TASK>`).
+3. **Dispatch.** Each codebase (with its `Dockerfile`) is submitted as a job to
+   the coordinator, which **builds it per job** and runs them concurrently across
+   its GPU workers. The task is selected via the job's `env` (`TASK`, plus `SEED`
+   for eval runs), read by the image's entrypoint.
 4. **Score.** Finished jobs are downloaded; each is scored by its
    `fitness_function` (read from the training TensorBoard logs).
 5. **Re-evaluate & feed back.** The best candidate is retrained `num_eval` times,
@@ -56,9 +58,10 @@ rationale.
 
 ## Prerequisites
 
-- A **PCS coordinator** reachable over HTTP, with GPU workers registered and the
-  training image (`pcs-isaaclab-ard:2.3.2`, built from `ard-isaaclab-tasks/Dockerfile`)
-  present on those workers. See the PCS repo for standing one up.
+- A **PCS coordinator** reachable over HTTP, with GPU workers registered. PCS is
+  deploy-by-Dockerfile: each job ships the `ard-isaaclab-tasks` codebase (with its
+  `Dockerfile`) and the worker **builds it per job**, so no training image needs to
+  be prebuilt on the workers. See the PCS repo for standing one up.
 - A local checkout of **`ard-isaaclab-tasks`** (referenced by `configs/settings.yaml`).
 - An LLM endpoint (OpenRouter-compatible by default).
 - Python 3.10+. ARD's own dependencies are light (no Isaac Lab needed locally):
@@ -73,14 +76,14 @@ Three YAML files under `configs/`:
 
 | File | What it sets |
 |---|---|
-| `settings.yaml` | `tasks_repo`, `output_dir`, and the `coordinator` block (`base_url`, `token_env`, `docker_image`, `gpus`, `timeout_seconds`, `command_template`, …). |
+| `settings.yaml` | `tasks_repo`, `output_dir`, and the `coordinator` block (`base_url`, `token_env`, `gpus`, `timeout_seconds`, `output_paths`, optional `env`/`build_args`/`command_template`). |
 | `taskconfig.yaml` | The task: `task` (e.g. `Isaac-ARD-Cartpole-v0`), `env_file` (the env whose `_get_rewards` is rewritten), `description` (the LLM's brief), `max_iterations`. |
 | `refineconfig.yaml` | The loop: `iteration`, `num_eval`, `base_seed`, and the `agent` block (`model`, `base_url`, `sample`, `temperature`). |
 
 Secrets come from the environment, never the configs:
 
 ```bash
-export TOKEN=pcs_...           # coordinator bearer token
+export PCS_TOKEN=pcs_...        # coordinator bearer token
 export OPENROUTER_API_KEY=...      # LLM key
 ```
 

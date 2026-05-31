@@ -20,7 +20,7 @@ Example:
     ...     tasks_repo="/home/lee/code/ard-isaaclab-tasks",
     ...     env_file_rel="source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py",
     ...     task="Isaac-ARD-Cartpole-v0",
-    ...     coordinator={"base_url": "http://localhost:8000", "token_env": "TOKEN"},
+    ...     coordinator={"base_url": "http://localhost:8000", "token_env": "PCS_TOKEN"},
     ...     output_dir="./runs/cartpole",
     ... )
     >>> evaluator.evaluate(records)   # dispatch + capture

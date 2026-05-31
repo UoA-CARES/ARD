@@ -53,8 +53,9 @@ class RewardEvaluator:
         env_file_rel: Task env file (relative to ``tasks_repo``) to inject into.
         task: Registered task ID, e.g. ``Isaac-ARD-Cartpole-v0``.
         coordinator: Dict with coordinator settings:
-            base_url (required), token / token_env, docker_image, gpus,
-            timeout_seconds, poll_interval, output_paths, command_template.
+            base_url (required), token / token_env, gpus, timeout_seconds,
+            poll_interval, output_paths, env (extra container env passed to every
+            job), build_args, and an optional command_template override.
         output_dir: Where artifacts are downloaded and extracted.
         build_root: Optional staging dir for codebase tarballs.
     """
@@ -72,17 +73,21 @@ class RewardEvaluator:
         self.output_dir = os.path.abspath(os.path.expanduser(output_dir))
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Coordinator job parameters.
-        self.docker_image = coordinator.get("docker_image", config.DEFAULT_DOCKER_IMAGE)
+        # Coordinator job parameters. PCS builds the project's Dockerfile per job
+        # (no prebuilt image tag); the task image's entrypoint is driven by the
+        # job `env`, so the task/seed are passed there rather than as a command.
         self.gpus = int(coordinator.get("gpus", config.DEFAULT_GPUS))
         self.timeout_seconds = int(
             coordinator.get("timeout_seconds", config.DEFAULT_TRAINING_TIMEOUT)
         )
         self.output_paths = coordinator.get("output_paths", config.DEFAULT_OUTPUT_PATHS)
-        self.command_template = coordinator.get(
-            "command_template",
-            "bash quickstart.sh {task}",
-        )
+        # Extra container env applied to every job (e.g. MAX_ITERATIONS, NUM_ENVS,
+        # WANDB_*), and optional docker build args.
+        self.env_extra = dict(coordinator.get("env", {}))
+        self.build_args = dict(coordinator.get("build_args", {}))
+        # Optional override of the image CMD. Default None -> the image's own
+        # entrypoint runs, configured entirely through `env`.
+        self.command_template = coordinator.get("command_template")
 
         self.client = CoordinatorClient(
             base_url=coordinator["base_url"],
@@ -105,8 +110,8 @@ class RewardEvaluator:
                 "submissions may fail."
             )
         logger.info(
-            f"RewardEvaluator ready: task={task} image={self.docker_image} "
-            f"gpus={self.gpus} timeout={self.timeout_seconds}s"
+            f"RewardEvaluator ready: task={task} gpus={self.gpus} "
+            f"timeout={self.timeout_seconds}s (deploy-by-Dockerfile, env-driven)"
         )
 
     # ------------------------------------------------------------------ prompt
@@ -119,7 +124,23 @@ class RewardEvaluator:
         return self.workspace.get_env_source()
 
     # ---------------------------------------------------------------- evaluate
-    def _build_command(self, seed: Optional[int]) -> str:
+    def _build_env(self, seed: Optional[int]) -> Dict[str, str]:
+        """Container env for one job: the task, its seed, and any configured extras.
+
+        The ard-isaaclab-tasks image entrypoint reads ``TASK`` and ``SEED`` (plus
+        optional ``MAX_ITERATIONS``/``NUM_ENVS``/``WANDB_*``) from the env, so the
+        per-eval seed is now honoured (the old quickstart command path ignored it).
+        """
+        env = {"TASK": self.task}
+        if seed is not None:
+            env["SEED"] = str(seed)
+        env.update({k: str(v) for k, v in self.env_extra.items()})
+        return env
+
+    def _build_command(self, seed: Optional[int]) -> Optional[str]:
+        """Optional CMD override; None means run the image's own entrypoint."""
+        if not self.command_template:
+            return None
         return self.command_template.format(
             task=self.task,
             seed="" if seed is None else seed,
@@ -173,9 +194,10 @@ class RewardEvaluator:
             try:
                 job_id = self.client.submit_job(
                     tarball_path=tarball,
-                    command=self._build_command(record.seed),
-                    docker_image=self.docker_image,
                     output_paths=self.output_paths,
+                    env=self._build_env(record.seed),
+                    command=self._build_command(record.seed),
+                    build_args=self.build_args,
                     gpus=self.gpus,
                     timeout_seconds=self.timeout_seconds,
                 )
@@ -201,7 +223,7 @@ class RewardEvaluator:
             record = job_meta[job_id]
             record.status = job["status"]
             if job["status"] != "succeeded":
-                record.eval_error = job.get("error_message") or job["status"]
+                record.eval_error = job.get("error") or job["status"]
                 logger.warning(f"[{record.tag}] job {job_id} {job['status']}")
                 continue
 

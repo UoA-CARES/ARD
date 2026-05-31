@@ -3,9 +3,9 @@
 #
 # Prereqs:
 #   - A PCS coordinator reachable at settings.coordinator.base_url, with GPU
-#     workers registered and the training image (settings.coordinator.docker_image)
-#     present on them.
-#   - export TOKEN=pcs_...          # coordinator bearer token
+#     workers registered. PCS builds each job's Dockerfile per submission, so no
+#     prebuilt training image needs to be present on the workers.
+#   - export PCS_TOKEN=pcs_...      # coordinator bearer token
 #   - export OPENROUTER_API_KEY=...     # LLM key
 #
 # Usage:
