@@ -17,11 +17,11 @@ output_dir: "./runs"
 # prebuilt image tag to configure. The task image's entrypoint is driven by the
 # job `env`, so ARD passes TASK (and SEED for eval runs) there automatically.
 coordinator:
-  base_url: "http://130.216.238.119:8000"
+  base_url: "http://localhost:8000"
   # Bearer token. Preferred: export PCS_TOKEN. Alternatively set `token:` here
   # (avoid committing secrets). token_env names the env var to read.
   token_env: "PCS_TOKEN"
-  gpus: 1
+  gpus: 0.40
   timeout_seconds: 3600
   poll_interval: 10
   # Output paths the coordinator collects into each job's artifacts tarball.
@@ -29,8 +29,8 @@ coordinator:
   output_paths: ["logs"]
   # Extra container env applied to every job (the entrypoint reads these).
   # Smoke-test setting: cap PPO iterations so each job finishes quickly.
-  env:
-    MAX_ITERATIONS: "150"    # PPO iterations (--max_iterations)
+  # env:
+  #   MAX_ITERATIONS: "150"    # PPO iterations (--max_iterations)
   #   NUM_ENVS: "1024"        # parallel envs (--num_envs)
   # Optional `docker build --build-arg` values:
   # build_args: {}

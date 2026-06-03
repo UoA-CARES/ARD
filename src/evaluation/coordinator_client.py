@@ -100,7 +100,7 @@ class CoordinatorClient:
         env: Optional[Dict[str, str]] = None,
         command: Optional[str] = None,
         build_args: Optional[Dict[str, str]] = None,
-        gpus: int = 1,
+        gpus: float = 1,
         timeout_seconds: int = 3600,
     ) -> str:
         """

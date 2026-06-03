@@ -76,7 +76,7 @@ class RewardEvaluator:
         # Coordinator job parameters. PCS builds the project's Dockerfile per job
         # (no prebuilt image tag); the task image's entrypoint is driven by the
         # job `env`, so the task/seed are passed there rather than as a command.
-        self.gpus = int(coordinator.get("gpus", config.DEFAULT_GPUS))
+        self.gpus = float(coordinator.get("gpus", config.DEFAULT_GPUS))
         self.timeout_seconds = int(
             coordinator.get("timeout_seconds", config.DEFAULT_TRAINING_TIMEOUT)
         )
