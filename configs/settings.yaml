@@ -22,7 +22,7 @@ coordinator:
   # (avoid committing secrets). token_env names the env var to read.
   token_env: "PCS_TOKEN"
   gpus: 0.40
-  timeout_seconds: 3600
+  timeout_seconds: 36000
   poll_interval: 10
   # Output paths the coordinator collects into each job's artifacts tarball.
   # The entrypoint writes the rl_games run under logs/ relative to the mount.
