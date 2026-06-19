@@ -17,6 +17,22 @@ output_dir: "./runs"
 # prebuilt image tag to configure. The task image's entrypoint is driven by the
 # job `env`, so ARD passes TASK (and SEED for eval runs) there automatically.
 coordinator:
+  # Execution backend:
+  #   "coordinator" (default) — dispatch jobs to the PCS coordinator below.
+  #   "local"                  — single-machine mode: build + run each job's
+  #                              Dockerfile locally via docker (no coordinator,
+  #                              no token/base_url needed). Lighter for routine
+  #                              evaluation. `gpus` below sets how many jobs share
+  #                              the local GPU at once: floor(1/gpus), so 0.40 -> 2
+  #                              concurrent, 0.25 -> 4 (fractional gpus is a
+  #                              concurrency signal, not a hard VRAM cap).
+  mode: "local"
+  # Local-mode only: docker image repo (per-job tags appended), an optional dir
+  # for the per-job /work mounts (defaults to a temp dir), and an optional hard
+  # override of the gpus-derived concurrency cap.
+  # image: "ard-local"
+  # work_root: "./runs/_local_work"
+  # max_concurrent: 4
   base_url: "http://localhost:8000"
   # Bearer token. Preferred: export PCS_TOKEN. Alternatively set `token:` here
   # (avoid committing secrets). token_env names the env var to read.

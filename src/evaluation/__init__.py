@@ -30,6 +30,7 @@ Example:
 from .evaluator import RewardEvaluator
 from .scorer import FitnessScorer
 from .coordinator_client import CoordinatorClient, CoordinatorError
+from .local_runner import LocalRunner, LocalRunnerError
 from .workspace_manager import WorkspaceManager
 from .reward_injection import inject_reward, extract_method_source, RewardInjectionError
 from .result_processor import ResultProcessor, CapturedArtifacts
@@ -40,6 +41,8 @@ __all__ = [
     "FitnessScorer",
     "CoordinatorClient",
     "CoordinatorError",
+    "LocalRunner",
+    "LocalRunnerError",
     "WorkspaceManager",
     "ResultProcessor",
     "CapturedArtifacts",

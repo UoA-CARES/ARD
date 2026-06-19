@@ -27,6 +27,7 @@ import logging
 from typing import Dict, List, Optional
 
 from .coordinator_client import CoordinatorClient, CoordinatorError
+from .local_runner import LocalRunner
 from .workspace_manager import WorkspaceManager
 from .reward_injection import RewardInjectionError
 from .result_processor import ResultProcessor
@@ -89,14 +90,27 @@ class RewardEvaluator:
         # entrypoint runs, configured entirely through `env`.
         self.command_template = coordinator.get("command_template")
 
-        self.client = CoordinatorClient(
-            base_url=coordinator["base_url"],
-            token=coordinator.get("token"),
-            token_env=coordinator.get("token_env", config.DEFAULT_TOKEN_ENV),
-            poll_interval=float(
-                coordinator.get("poll_interval", config.DEFAULT_POLL_INTERVAL)
-            ),
-        )
+        # Single-machine mode: replicate one PCS worker locally (build + run the
+        # job's Dockerfile via docker) instead of dispatching to a coordinator.
+        # LocalRunner duck-types the client methods evaluate() uses, so nothing
+        # else below changes. Select it with `coordinator.mode: local`.
+        self.local_mode = str(coordinator.get("mode", "coordinator")).lower() == "local"
+        if self.local_mode:
+            self.client = LocalRunner(
+                image=coordinator.get("image", "ard-local"),
+                gpus=self.gpus,
+                work_root=coordinator.get("work_root"),
+                max_concurrent=coordinator.get("max_concurrent"),
+            )
+        else:
+            self.client = CoordinatorClient(
+                base_url=coordinator["base_url"],
+                token=coordinator.get("token"),
+                token_env=coordinator.get("token_env", config.DEFAULT_TOKEN_ENV),
+                poll_interval=float(
+                    coordinator.get("poll_interval", config.DEFAULT_POLL_INTERVAL)
+                ),
+            )
         self.workspace = WorkspaceManager(
             tasks_repo=tasks_repo,
             env_file_rel=env_file_rel,
@@ -104,13 +118,13 @@ class RewardEvaluator:
         )
         self.processor = ResultProcessor()
 
+        backend = "local docker" if self.local_mode else coordinator.get("base_url")
         if not self.client.healthz():
             logger.warning(
-                f"Coordinator at {coordinator['base_url']} did not pass health check; "
-                "submissions may fail."
+                f"{backend} did not pass health check; submissions may fail."
             )
         logger.info(
-            f"RewardEvaluator ready: task={task} gpus={self.gpus} "
+            f"RewardEvaluator ready: task={task} backend={backend} gpus={self.gpus} "
             f"timeout={self.timeout_seconds}s (deploy-by-Dockerfile, env-driven)"
         )
 

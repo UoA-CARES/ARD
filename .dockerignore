@@ -1,0 +1,33 @@
+# Keep the ARD image build context small and reproducible.
+.git
+.gitignore
+.vscode
+.idea
+
+# Python caches / build leftovers
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Runtime outputs — downloaded artifacts, extracted logs, per-job work dirs.
+runs/
+**/training_record/
+*.tar.gz
+
+# Local scratch / secrets — never bake these into the image.
+*.log
+.env
+*.local
+
+# The Dockerfile itself and docs don't need to ship inside the image.
+Dockerfile
+.dockerignore
