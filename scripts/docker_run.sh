@@ -22,25 +22,37 @@
 # Usage:
 #   export OPENROUTER_API_KEY=...           # always
 #   export PCS_TOKEN=pcs_...                # coordinator mode only
-#   scripts/docker_run.sh [--build] [--] [main.py args...]
+#   scripts/docker_run.sh [--build] [--detach|-d] [--] [main.py args...]
 #
 #   scripts/docker_run.sh --build -- --refine --task cartpole
 #   scripts/docker_run.sh --refine                 # default args: --refine
+#   scripts/docker_run.sh -d --refine              # background; docker logs -f ard-run
 #
 # Env knobs:
 #   ARD_IMAGE   image tag to build / run   (default: ard:latest)
 #   SETTINGS    settings file to read      (default: configs/settings.yaml)
+#   ARD_NAME    container name when -d      (default: ard-run)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
 
 ARD_IMAGE="${ARD_IMAGE:-ard:latest}"
 SETTINGS="${SETTINGS:-configs/settings.yaml}"
+ARD_NAME="${ARD_NAME:-ard-run}"          # container name when detached (-d)
 
 # --- parse script flags vs. forwarded main.py args --------------------------
+# --build / --detach may appear in any order; the first non-flag (or `--`)
+# starts the main.py args.
 DO_BUILD=0
-[[ "${1:-}" == "--build" ]] && { DO_BUILD=1; shift; }
-[[ "${1:-}" == "--" ]] && shift          # optional separator
+DETACH=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build)     DO_BUILD=1; shift ;;
+        -d|--detach) DETACH=1;   shift ;;
+        --)          shift; break ;;
+        *)           break ;;
+    esac
+done
 ARD_ARGS=("$@")
 [[ ${#ARD_ARGS[@]} -eq 0 ]] && ARD_ARGS=(--refine)
 
@@ -62,8 +74,29 @@ PY
 
 : "${OPENROUTER_API_KEY:?export OPENROUTER_API_KEY first}"
 
-common=(--rm -i -e OPENROUTER_API_KEY -e PCS_TOKEN)
-[[ -t 1 ]] && common+=(-t)               # a TTY keeps tqdm bars tidy
+# Detached (-d): background under a known --name so you can follow/stop it.
+# Attached: keep stdin (+TTY when present) so tqdm bars stay tidy. --rm either
+# way — on a shared box, don't leak stopped containers.
+common=(--rm -e OPENROUTER_API_KEY -e PCS_TOKEN)
+if [[ $DETACH -eq 1 ]]; then
+    common+=(-d --name "$ARD_NAME")
+else
+    common+=(-i)
+    [[ -t 1 ]] && common+=(-t)
+fi
+
+# Attached: hand the terminal to docker (exec). Detached: `docker run -d` just
+# prints the id and returns, so run it and then print how to follow/stop.
+launch() {
+    if [[ $DETACH -eq 1 ]]; then
+        docker run "$@"
+        echo ">> detached as '$ARD_NAME'"
+        echo "   follow:  docker logs -f $ARD_NAME"
+        echo "   stop:    docker stop $ARD_NAME"
+    else
+        exec docker run "$@"
+    fi
+}
 
 if [[ "$MODE" == "local" ]]; then
     echo ">> local (docker-out-of-docker) mode | tasks_repo=$TASKS_REPO"
@@ -76,7 +109,7 @@ if [[ "$MODE" == "local" ]]; then
     # that uid access to the docker socket. The repo + tasks repo are bound at
     # their own host paths so every `docker run -v <path>` ARD emits resolves on
     # the host; HOME points into the mounted repo for any cache writes.
-    exec docker run "${common[@]}" \
+    launch "${common[@]}" \
         -u "$(id -u):$(id -g)" \
         ${DOCKER_GID:+--group-add "$DOCKER_GID"} \
         -e HOME="$REPO" \
@@ -90,7 +123,7 @@ else
     echo ">> coordinator mode | tasks_repo=$TASKS_REPO"
     # Pure HTTP client: persist runs/, keep configs editable, mount the tasks
     # repo read-only at the path settings.yaml names. The baked /app code runs.
-    exec docker run "${common[@]}" \
+    launch "${common[@]}" \
         -v "$TASKS_REPO:$TASKS_REPO:ro" \
         -v "$REPO/runs:/app/runs" \
         -v "$REPO/configs:/app/configs:ro" \
