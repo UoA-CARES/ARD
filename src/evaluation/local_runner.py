@@ -100,7 +100,13 @@ class LocalRunner:
         self.gpus = float(gpus)
         self.max_concurrent = int(max_concurrent) if max_concurrent \
             else _derive_concurrency(self.gpus)
-        self.work_root = work_root or tempfile.mkdtemp(prefix="ard_local_work_")
+        # Resolve to an absolute path: per-job dirs are bind-mounted via
+        # ``docker run -v <src>:/work`` and docker rejects a relative source.
+        # (``mkdtemp`` already returns an absolute path.)
+        self.work_root = (
+            os.path.abspath(os.path.expanduser(work_root))
+            if work_root else tempfile.mkdtemp(prefix="ard_local_work_")
+        )
         self.run_as_user = run_as_user
         os.makedirs(self.work_root, exist_ok=True)
         # job_id -> spec/result dict (see submit_job / _run_job).

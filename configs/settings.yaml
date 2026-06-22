@@ -31,7 +31,10 @@ coordinator:
   # for the per-job /work mounts (defaults to a temp dir), and an optional hard
   # override of the gpus-derived concurrency cap.
   # image: "ard-local"
-  # work_root: "./runs/_local_work"
+  # Per-job /work mounts (logs land here). Kept inside the workspace under
+  # ./runs/ (git-ignored) for easier management; relative paths are resolved to
+  # an absolute path before being handed to `docker run -v`.
+  work_root: "./runs/_local_work"
   # max_concurrent: 4
   base_url: "http://localhost:8000"
   # Bearer token. Preferred: export PCS_TOKEN. Alternatively set `token:` here
