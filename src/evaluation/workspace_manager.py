@@ -45,7 +45,13 @@ class WorkspaceManager:
     ):
         self.tasks_repo = os.path.abspath(os.path.expanduser(tasks_repo))
         self.env_file_rel = env_file_rel
-        self.build_root = build_root or tempfile.mkdtemp(prefix="ard_codebase_")
+        # Resolve to an absolute path so staging/tarball locations are stable
+        # regardless of CWD (the coordinator/local backends read the tarball by
+        # path). ``mkdtemp`` already returns an absolute path.
+        self.build_root = (
+            os.path.abspath(os.path.expanduser(build_root))
+            if build_root else tempfile.mkdtemp(prefix="ard_codebase_")
+        )
 
         if not os.path.isdir(self.tasks_repo):
             raise ValueError(f"tasks_repo not found: {self.tasks_repo}")

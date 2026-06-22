@@ -101,6 +101,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         task=task_cfg["task"],
         coordinator=settings["coordinator"],
         output_dir=output_dir,
+        build_root=settings.get("build_root"),
     )
     scorer = FitnessScorer()
 

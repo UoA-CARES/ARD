@@ -9,6 +9,14 @@ tasks_repo: "/home/lee/code/ard-isaaclab-tasks"
 # Where ARD downloads artifacts and writes extracted logs / per-run records.
 output_dir: "./runs"
 
+# Where per-candidate codebases are staged before build/submit (a fresh copy of
+# tasks_repo with the proposed reward spliced in, plus its build-context tarball).
+# Kept inside the workspace under ./runs/ (git-ignored) instead of an ephemeral
+# /tmp dir, so the exact code that was built can be inspected. Relative paths are
+# resolved to absolute. Leave unset to use a throwaway temp dir.
+# NOTE: nothing auto-prunes this — clear ./runs/_codebases periodically.
+build_root: "./runs/_codebases"
+
 # Parallel Coordination System (PCS) coordinator that schedules and runs the
 # training jobs across registered GPU workers. ARD is a pure client of it.
 #
