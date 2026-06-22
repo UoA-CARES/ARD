@@ -1,0 +1,29 @@
+# docker-compose.yml — convenience wrapper for ARD in *coordinator* mode.
+#
+# In coordinator mode ARD is a pure HTTP client of a PCS coordinator: no docker
+# socket and no GPU are needed in this container. Point TASKS_REPO at your
+# ard-isaaclab-tasks checkout (it is mounted at the same absolute path
+# settings.yaml names, so no config edit is required) and export the secrets:
+#
+#   export OPENROUTER_API_KEY=...   PCS_TOKEN=pcs_...
+#   export TASKS_REPO=/home/lee/code/ard-isaaclab-tasks
+#   docker compose run --rm ard --refine --task cartpole
+#
+# Requires configs/settings.yaml to have `coordinator.mode: coordinator`.
+#
+# For local (docker-out-of-docker) mode — where ARD builds + runs one GPU task
+# container per evaluation — use scripts/docker_run.sh instead. It wires the
+# docker socket and the identical host-path mounts those sibling task containers
+# need, which compose can't express portably.
+services:
+  ard:
+    build: .
+    image: ard:latest
+    environment:
+      - OPENROUTER_API_KEY
+      - PCS_TOKEN
+    volumes:
+      - ${TASKS_REPO:?set TASKS_REPO to your ard-isaaclab-tasks checkout}:${TASKS_REPO}:ro
+      - ./runs:/app/runs
+      - ./configs:/app/configs:ro
+    command: ["--refine"]

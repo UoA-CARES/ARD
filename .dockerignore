@@ -1,0 +1,27 @@
+# Keep the build context small and the image clean.
+.git
+.gitignore
+.vscode
+.claude
+
+# Python caches / build artefacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Runtime output: downloaded artifacts, staged per-candidate codebases, local
+# /work mounts. Never belongs in the image (can be many GB).
+runs/
+
+# Local job tarballs / scratch
+*.tar.gz
+testest.py
+
+# Docs and examples aren't needed at run time.
+README.md
+ARCHITECTURE.md
+examples/

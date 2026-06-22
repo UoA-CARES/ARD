@@ -110,6 +110,45 @@ To refine a different task, point `taskconfig.yaml` at it (`task` + `env_file`):
 | `Isaac-ARD-Forge-NutThread-v0` | `…/tasks/direct/forge/forge_env.py` |
 | `Isaac-ARD-Shadow-Hand-Over-v0` | `…/tasks/direct/shadow_hand_over/shadow_hand_over_env.py` |
 
+## Running in Docker
+
+ARD ships a `Dockerfile` that packages the orchestrator (CPU-only, plus the
+docker CLI). The recommended entry point is `scripts/docker_run.sh`, which reads
+`coordinator.mode` and `tasks_repo` from your settings file and wires the right
+container for that backend:
+
+```bash
+export OPENROUTER_API_KEY=...        # always
+export PCS_TOKEN=pcs_...             # coordinator mode only
+scripts/docker_run.sh --build -- --refine --task cartpole
+```
+
+Each backend needs different plumbing:
+
+- **`coordinator` mode** — ARD is a pure HTTP client of the PCS coordinator, so
+  the container needs no GPU and no docker socket. It only mounts the
+  `ard-isaaclab-tasks` checkout (read-only, to stage codebase tarballs) and your
+  `runs/`. `docker compose` covers this path too:
+
+  ```bash
+  export TASKS_REPO=/path/to/ard-isaaclab-tasks
+  docker compose run --rm ard --refine --task cartpole
+  ```
+
+- **`local` mode** — ARD builds + runs **one GPU task container per evaluation**
+  from `ard-isaaclab-tasks`. The ARD container drives the **host** docker daemon
+  (docker-out-of-docker): `docker_run.sh` mounts `/var/run/docker.sock` and binds
+  both this repo and `tasks_repo` at their **identical host paths**. That path
+  matching is required — the per-job `work_dir` ARD hands to `docker run -v` is
+  resolved by the host daemon, so it must name a real host path. The launcher
+  also runs the container as your uid:gid (with `--group-add docker`) so the
+  files it and its task containers write stay owned by you.
+
+> Note: the GPU work happens in the **task** containers ARD launches, not in the
+> ARD container itself — so the ARD image carries no Isaac Lab / rl_games stack.
+> On the CARES shared HPC machines, docker-out-of-docker is disallowed; use
+> coordinator mode there (see `scripts/cares_run.sh`).
+
 ## Output
 
 Per task, under `output_dir/<task>/` (default `./runs/<task>/`):
