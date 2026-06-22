@@ -252,6 +252,11 @@ class LocalRunner:
                 run_args += ["--gpus", "all"]
             if self.run_as_user:
                 run_args += ["-u", f"{os.getuid()}:{os.getgid()}"]
+                # A host uid (e.g. 1001 on the CARES HPC) has no /etc/passwd entry
+                # inside the task image, so getpass.getuser() -> pwd.getpwuid() raises
+                # KeyError (torch inductor hits this naming its cache dir). USER/LOGNAME
+                # are checked first by getuser(), so setting them skips the pwd lookup.
+                run_args += ["-e", "USER=ard", "-e", "LOGNAME=ard"]
             run_args += ["-e", "HOME=/work", "-w", "/work", "-v", f"{work_dir}:/work"]
             for k, v in job["env"].items():
                 run_args += ["-e", f"{k}={v}"]
