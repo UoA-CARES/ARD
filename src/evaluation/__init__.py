@@ -19,7 +19,7 @@ Example:
     ...     tasks_repo="/home/lee/code/ard-isaaclab-tasks",
     ...     env_file_rel="source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py",
     ...     task="Isaac-ARD-Cartpole-v0",
-    ...     runner={"gpus": 1, "work_root": "./runs/_local_work"},
+    ...     runner={"use_gpu": True},
     ...     output_dir="./runs/cartpole",
     ... )
     >>> evaluator.evaluate(records)   # dispatch + capture

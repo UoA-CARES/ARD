@@ -6,7 +6,9 @@
 # copy of this repo, packaged, and built + run locally as a docker job.
 tasks_repo: "/home/lee/code/ard-isaaclab-tasks"
 
-# Where ARD downloads artifacts and writes extracted logs / per-run records.
+# Where ARD runs each candidate and keeps its logs. Every candidate's training
+# job runs in its own <output_dir>/<task>/<tag>/ directory (the container's /work
+# mount) and its logs / per-run records are read from there in place.
 output_dir: "./runs"
 
 # Where per-candidate codebases are staged before build/submit (a fresh copy of
@@ -27,17 +29,10 @@ build_root: "./runs/_codebases"
 runner:
   # Docker image repo (per-job tags are appended per candidate).
   # image: "ard-local"
-  # Per-job /work mounts (logs land here). Kept inside the workspace under
-  # ./runs/ (git-ignored) for easier management; relative paths are resolved to
-  # an absolute path before being handed to `docker run -v`.
-  work_root: "./runs/_local_work"
-  # GPU request: > 0 attaches the local GPU (--gpus all); 0 runs CPU-only.
-  # Jobs run one at a time regardless.
-  gpus: 1
+  # GPU: true attaches the local GPU (docker run --gpus all); false runs
+  # CPU-only. One candidate runs at a time — there is no fractional-GPU request.
+  use_gpu: true
   timeout_seconds: 36000
-  # Output paths collected into each job's artifacts tarball.
-  # The entrypoint writes the rl_games run under logs/ relative to the mount.
-  output_paths: ["logs"]
   # Extra container env applied to every job (the entrypoint reads these).
   # Smoke-test setting: cap PPO iterations so each job finishes quickly.
   # env:

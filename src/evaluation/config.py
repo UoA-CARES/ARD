@@ -17,13 +17,9 @@ FITNESS_METRIC = "fitness_function"
 # Default per-job wall-clock timeout for a local training run (seconds).
 DEFAULT_TRAINING_TIMEOUT = 36000
 
-# Default number of GPUs requested per job.
-DEFAULT_GPUS = 1
-
-# Output paths collected into a job's artifacts tarball.
-# scripts/pcs_entrypoint.sh writes the rl_games run under ``logs/`` relative to
-# the per-job mount, so that single directory carries everything ARD reads back.
-DEFAULT_OUTPUT_PATHS = ["logs"]
+# Whether a job attaches the local GPU by default (docker run --gpus all).
+# A single candidate runs at a time; there is no fractional-GPU request.
+DEFAULT_USE_GPU = True
 
 # TensorBoard summary size guidance (load all scalars, no histograms/images).
 from tensorboard.backend.event_processing import event_accumulator as _ea  # noqa: E402

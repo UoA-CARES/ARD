@@ -16,7 +16,9 @@ repo:
   evaluation metric from `_get_dones`, independent of the reward.
 
 For each candidate, ARD builds that repo's `Dockerfile` and `docker run`s the
-training image **on the local machine, one job at a time** (`LocalRunner`).
+training image **on the local machine, one candidate at a time** (`LocalRunner`).
+LLM generation is fanned out across threads; running the candidates is a plain
+sequential loop — no job queue, no distribution.
 
 ## How the loop works
 
@@ -29,9 +31,9 @@ training image **on the local machine, one job at a time** (`LocalRunner`).
                     │      │  scalar summary)         │                                │
                     │   best run                  tar.gz codebase per candidate        │
                     │      │                          │                                │
-                    │   ResultProcessor ◄── artifacts ── LocalRunner ── docker build + run
+                    │   ResultProcessor ◄── logs ── LocalRunner ── docker build + run  │
                     └──────────────────────────────────────────────────────────────────┘        │
-                                                                                         one job at a time;
+                                                                                         one candidate at a time;
                                                                                          trains PPO (rl_games);
                                                                                          scores by fitness_function
 ```
@@ -42,10 +44,10 @@ One refinement iteration:
 2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks`
    via AST and packed into a `.tar.gz` codebase.
 3. **Run.** Each codebase (with its `Dockerfile`) is **built and `docker run`**
-   locally, one job at a time. The task is selected via the job's `env` (`TASK`,
-   plus `SEED` for eval runs), read by the image's entrypoint.
-4. **Score.** Finished jobs' artifacts are collected; each is scored by its
-   `fitness_function` (read from the training TensorBoard logs).
+   locally, one candidate at a time. The task is selected via the job's `env`
+   (`TASK`, plus `SEED` for eval runs), read by the image's entrypoint.
+4. **Score.** Each finished job's `logs/` are read in place from its work dir;
+   each is scored by its `fitness_function` (from the training TensorBoard logs).
 5. **Re-evaluate & feed back.** The best candidate is retrained `num_eval` times,
    and its training summary is fed back to the LLM to inform the next iteration.
 
@@ -75,7 +77,7 @@ Three YAML files under `configs/`:
 
 | File | What it sets |
 |---|---|
-| `settings.yaml` | `tasks_repo`, `output_dir`, and the `runner` block (`gpus`, `timeout_seconds`, `output_paths`, `image`, `work_root`, optional `env`/`build_args`/`command_template`). |
+| `settings.yaml` | `tasks_repo`, `output_dir`, and the `runner` block (`use_gpu`, `timeout_seconds`, `image`, optional `env`/`build_args`/`command_template`). |
 | `taskconfig.yaml` | The task: `task` (e.g. `Isaac-ARD-Cartpole-v0`), `env_file` (the env whose `_get_rewards` is rewritten), `description` (the LLM's brief), `max_iterations`. |
 | `refineconfig.yaml` | The loop: `iteration`, `num_eval`, `base_seed`, and the `agent` block (`model`, `base_url`, `sample`, `temperature`). |
 
@@ -89,12 +91,12 @@ export OPENROUTER_API_KEY=...      # LLM key
 
 ```bash
 python main.py --refine
+# a specific task by name (resolves its ard_meta.yaml in tasks_repo):
+python main.py --refine --task humanoid
 # explicit configs:
 python main.py --refine --settings configs/settings.yaml \
                --taskconfig configs/taskconfig.yaml \
                --refineconfig configs/refineconfig.yaml
-# several tasks in sequence:
-bash scripts/runrefine.sh
 ```
 
 To refine a different task, point `taskconfig.yaml` at it (`task` + `env_file`):
@@ -112,7 +114,8 @@ To refine a different task, point `taskconfig.yaml` at it (`task` + `env_file`):
 
 Per task, under `output_dir/<task>/` (default `./runs/<task>/`):
 
-- downloaded job artifacts (`<tag>.tar.gz`) and their extracted `logs/` trees,
+- one directory per candidate, `<tag>/` — the job's `/work` mount, holding its
+  `logs/` tree (read in place; nothing is packed or downloaded),
 - per-run `training_record/training_summary.txt` — the scalar summary fed to the LLM,
 - console logs reporting each iteration's best candidate and its fitness.
 
@@ -124,13 +127,12 @@ configs/
   settings.yaml               local runner, tasks_repo, output_dir
   taskconfig.yaml             task id, env file, description, max_iterations
   refineconfig.yaml           iterations, eval count, LLM agent settings
-scripts/runrefine.sh          run the loop over one or more task configs
 src/
   evaluation/
     local_runner.py           build + docker run each candidate locally, one at a time
     reward_injection.py       AST splice of the LLM reward into _get_rewards
     workspace_manager.py      build per-candidate job codebases (.tar.gz)
-    result_processor.py       unpack artifacts, read fitness_function, summarize
+    result_processor.py       read the job's logs in place, summarize for feedback
     evaluator.py              RewardEvaluator — the orchestrator
   refinement/
     llm_agent.py              EurekaAgent — proposes rewards, folds in feedback

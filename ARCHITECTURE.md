@@ -7,17 +7,18 @@ ARD's reward-refinement loop is built around one external repo and a local runne
   `_get_rewards` method (the sole ARD edit target) and logging a fixed
   `fitness_function` evaluation metric.
 - **`LocalRunner`** — ARD builds each candidate's `Dockerfile` and `docker run`s
-  the training image on this machine, one job at a time, then collects its
-  artifacts. There is no remote scheduler; ARD is a thin single-machine driver.
+  the training image on this machine, one candidate at a time, then reads the
+  `logs/` it wrote to its own work dir. There is no remote scheduler and no job
+  queue; ARD is a thin single-machine driver.
 
 ## What changed from the old pipeline
 
 | Concern | Old | New |
 |---|---|---|
-| Distribution | `ParallelExecutor` SSH'd into `machines_pool.txt` and ran `docker/run_remote_pipeline.sh` per task | Build + `docker run` each candidate locally (`LocalRunner`), one job at a time |
+| Distribution | `ParallelExecutor` SSH'd into `machines_pool.txt` and ran `docker/run_remote_pipeline.sh` per task | Build + `docker run` each candidate locally (`LocalRunner`), one candidate at a time |
 | Reward injection | git-checkout an in-tree project + **regex** replace of a `@torch.jit.script` reward fn | Copy the tasks repo + **AST** rewrite of `_get_rewards` (`reward_injection.py`) |
 | Eval metric | `Episode/consecutive_successes` | `fitness_function` (logged by every task; matched by tag suffix) |
-| Result source | local TensorBoard path on the training host | per-job **artifacts tarball** (`logs/…/summaries/`) |
+| Result source | local TensorBoard path on the training host | per-job **work dir** read in place (`<tag>/logs/…/summaries/`) |
 | LLM target | a standalone reward fn returning `(total_reward, components)` | a whole `_get_rewards(self)` method returning the reward |
 
 ## Fitness isolation (task layer)
@@ -52,13 +53,9 @@ EurekaAgent.func_gen  ──►  N candidate _get_rewards methods
         │
 WorkspaceManager.build_codebase  ──►  per-candidate ard-isaaclab-tasks .tar.gz (reward injected)
         │
-LocalRunner.submit_job  ──►  queue one job per candidate (env={TASK,SEED})
+LocalRunner.run  ──►  docker build + docker run each candidate, one at a time (env={TASK,SEED})
         │
-LocalRunner.wait_for_all  ──►  docker build + docker run each job, one at a time
-        │
-LocalRunner.download_artifacts  ──►  <tag>.tar.gz
-        │
-ResultProcessor.capture  ──►  unpack artifacts + scalar summary
+ResultProcessor.capture  ──►  read <output_dir>/<tag>/logs + scalar summary
         │
 FitnessScorer.score_all / select_best  ──►  read fitness_function, pick the batch winner
         │
@@ -67,10 +64,10 @@ EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run 
 
 ## Module map (`src/`)
 
-- `evaluation/local_runner.py` — builds + `docker run`s each candidate locally (submit / wait / artifacts).
+- `evaluation/local_runner.py` — builds + `docker run`s each candidate locally (one blocking `run`: build → run → result).
 - `evaluation/reward_injection.py` — AST splice of `_get_rewards` (+ fitness preservation).
 - `evaluation/workspace_manager.py` — builds per-candidate job codebases.
-- `evaluation/result_processor.py` — unpacks artifacts, writes the scalar summary.
+- `evaluation/result_processor.py` — reads the job's logs in place, writes the scalar summary.
 - `evaluation/scorer.py` — `FitnessScorer`: reads `fitness_function`, ranks candidates.
 - `evaluation/evaluator.py` — `RewardEvaluator`, the dispatch + capture orchestrator.
 - `refinement/llm_agent.py` — `EurekaAgent` (proposes `_get_rewards`, folds in feedback).
@@ -79,7 +76,7 @@ EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run 
 ## Configuration
 
 - `configs/settings.yaml` — `tasks_repo`, `output_dir`, and the `runner` block
-  (`gpus`, `timeout_seconds`, `output_paths`, `image`, `work_root`, optional
+  (`use_gpu`, `timeout_seconds`, `image`, optional
   `env`/`build_args`/`command_template`). Each job's Dockerfile is built locally —
   there is no prebuilt image tag.
 - `configs/taskconfig.yaml` — `task`, `env_file` (the injection target), `description`, `max_iterations`.
