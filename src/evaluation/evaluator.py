@@ -1,5 +1,5 @@
 """
-Coordinator-driven evaluation orchestrator.
+Local evaluation orchestrator.
 
 ``RewardEvaluator`` is the high-level entry point ARD's refinement loop calls.
 Its sole responsibility is **dispatch + capture** — running candidates and
@@ -8,8 +8,8 @@ collecting their output. For a batch of :class:`~src.reward_history.RewardRecord
 
 1. Builds one job codebase per candidate (pristine ard-isaaclab-tasks repo + the
    proposed reward spliced in) — :class:`WorkspaceManager`.
-2. Submits every candidate as a job to the PCS coordinator — :class:`CoordinatorClient`.
-   The coordinator runs them concurrently across its registered GPU workers.
+2. Queues every candidate as a job with :class:`LocalRunner`, which builds and
+   runs each one on the local machine, one at a time.
 3. Waits for all jobs to terminate, downloads each succeeded job's artifacts, and
    captures its run paths + scalar summary — :class:`ResultProcessor`.
 
@@ -17,17 +17,13 @@ It writes job status and captured artifact paths back onto each record but does
 **not** read fitness or pick a winner — that judgement is
 :class:`~src.evaluation.scorer.FitnessScorer`'s job. This keeps the evaluator a
 pure executor and leaves scoring a separate, swappable step.
-
-This replaces the old SSH machine-pool + ``run_remote_pipeline.sh`` executor: ARD
-is now purely a coordinator client.
 """
 
 import os
 import logging
 from typing import Dict, List, Optional
 
-from .coordinator_client import CoordinatorClient, CoordinatorError
-from .local_runner import LocalRunner
+from .local_runner import LocalRunner, LocalRunnerError
 from .workspace_manager import WorkspaceManager
 from .reward_injection import RewardInjectionError
 from .result_processor import ResultProcessor
@@ -47,16 +43,15 @@ logger = logging.getLogger(__name__)
 
 class RewardEvaluator:
     """
-    Orchestrates coordinator-dispatched evaluation of reward candidates.
+    Orchestrates local evaluation of reward candidates.
 
     Args:
         tasks_repo: Path to the ard-isaaclab-tasks checkout.
         env_file_rel: Task env file (relative to ``tasks_repo``) to inject into.
         task: Registered task ID, e.g. ``Isaac-ARD-Cartpole-v0``.
-        coordinator: Dict with coordinator settings:
-            base_url (required), token / token_env, gpus, timeout_seconds,
-            poll_interval, output_paths, env (extra container env passed to every
-            job), build_args, and an optional command_template override.
+        runner: Dict with local-runner settings: gpus, timeout_seconds,
+            output_paths, image, work_root, env (extra container env passed to
+            every job), build_args, and an optional command_template override.
         output_dir: Where artifacts are downloaded and extracted.
         build_root: Optional staging dir for codebase tarballs.
     """
@@ -66,7 +61,7 @@ class RewardEvaluator:
         tasks_repo: str,
         env_file_rel: str,
         task: str,
-        coordinator: Dict,
+        runner: Dict,
         output_dir: str,
         build_root: Optional[str] = None,
     ):
@@ -74,43 +69,28 @@ class RewardEvaluator:
         self.output_dir = os.path.abspath(os.path.expanduser(output_dir))
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Coordinator job parameters. PCS builds the project's Dockerfile per job
-        # (no prebuilt image tag); the task image's entrypoint is driven by the
-        # job `env`, so the task/seed are passed there rather than as a command.
-        self.gpus = float(coordinator.get("gpus", config.DEFAULT_GPUS))
+        # Per-job parameters. Each job builds the project's Dockerfile (no prebuilt
+        # image tag); the task image's entrypoint is driven by the job `env`, so
+        # the task/seed are passed there rather than as a command.
+        self.gpus = float(runner.get("gpus", config.DEFAULT_GPUS))
         self.timeout_seconds = int(
-            coordinator.get("timeout_seconds", config.DEFAULT_TRAINING_TIMEOUT)
+            runner.get("timeout_seconds", config.DEFAULT_TRAINING_TIMEOUT)
         )
-        self.output_paths = coordinator.get("output_paths", config.DEFAULT_OUTPUT_PATHS)
+        self.output_paths = runner.get("output_paths", config.DEFAULT_OUTPUT_PATHS)
         # Extra container env applied to every job (e.g. MAX_ITERATIONS, NUM_ENVS,
         # WANDB_*), and optional docker build args.
-        self.env_extra = dict(coordinator.get("env", {}))
-        self.build_args = dict(coordinator.get("build_args", {}))
+        self.env_extra = dict(runner.get("env", {}))
+        self.build_args = dict(runner.get("build_args", {}))
         # Optional override of the image CMD. Default None -> the image's own
         # entrypoint runs, configured entirely through `env`.
-        self.command_template = coordinator.get("command_template")
+        self.command_template = runner.get("command_template")
 
-        # Single-machine mode: replicate one PCS worker locally (build + run the
-        # job's Dockerfile via docker) instead of dispatching to a coordinator.
-        # LocalRunner duck-types the client methods evaluate() uses, so nothing
-        # else below changes. Select it with `coordinator.mode: local`.
-        self.local_mode = str(coordinator.get("mode", "coordinator")).lower() == "local"
-        if self.local_mode:
-            self.client = LocalRunner(
-                image=coordinator.get("image", "ard-local"),
-                gpus=self.gpus,
-                work_root=coordinator.get("work_root"),
-                max_concurrent=coordinator.get("max_concurrent"),
-            )
-        else:
-            self.client = CoordinatorClient(
-                base_url=coordinator["base_url"],
-                token=coordinator.get("token"),
-                token_env=coordinator.get("token_env", config.DEFAULT_TOKEN_ENV),
-                poll_interval=float(
-                    coordinator.get("poll_interval", config.DEFAULT_POLL_INTERVAL)
-                ),
-            )
+        # Build + run each job's Dockerfile on the local machine, one at a time.
+        self.client = LocalRunner(
+            image=runner.get("image", "ard-local"),
+            gpus=self.gpus,
+            work_root=runner.get("work_root"),
+        )
         self.workspace = WorkspaceManager(
             tasks_repo=tasks_repo,
             env_file_rel=env_file_rel,
@@ -118,13 +98,12 @@ class RewardEvaluator:
         )
         self.processor = ResultProcessor()
 
-        backend = "local docker" if self.local_mode else coordinator.get("base_url")
         if not self.client.healthz():
             logger.warning(
-                f"{backend} did not pass health check; submissions may fail."
+                "local docker did not pass health check; runs may fail."
             )
         logger.info(
-            f"RewardEvaluator ready: task={task} backend={backend} gpus={self.gpus} "
+            f"RewardEvaluator ready: task={task} backend=local docker gpus={self.gpus} "
             f"timeout={self.timeout_seconds}s (deploy-by-Dockerfile, env-driven)"
         )
 
@@ -215,7 +194,7 @@ class RewardEvaluator:
                     gpus=self.gpus,
                     timeout_seconds=self.timeout_seconds,
                 )
-            except CoordinatorError as e:
+            except LocalRunnerError as e:
                 logger.error(f"[{tag}] job submission failed: {e}")
                 record.status = STATUS_SUBMIT_FAILED
                 record.eval_error = f"submit: {e}"

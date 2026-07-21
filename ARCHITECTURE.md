@@ -1,24 +1,23 @@
-# ARD Stage 2 — Architecture (post-coordinator migration)
+# ARD Stage 2 — Architecture
 
-ARD's reward-refinement loop was rebuilt around two external repos:
+ARD's reward-refinement loop is built around one external repo and a local runner:
 
-- **[`parallel_coordination_system`](../parallel_coordination_system)** (PCS) — a
-  generic remote job runner. One coordinator (FastAPI + scheduler + SQLite) owns
-  GPU-slot scheduling, SSH-to-worker dispatch, `docker run`, log capture, cleanup
-  and artifact collection. ARD is now a **pure HTTP client** of it.
 - **[`ard-isaaclab-tasks`](../ard-isaaclab-tasks)** — the IsaacLab task substrate.
   Six tasks registered as `Isaac-ARD-*`, each isolating its reward in a single
   `_get_rewards` method (the sole ARD edit target) and logging a fixed
   `fitness_function` evaluation metric.
+- **`LocalRunner`** — ARD builds each candidate's `Dockerfile` and `docker run`s
+  the training image on this machine, one job at a time, then collects its
+  artifacts. There is no remote scheduler; ARD is a thin single-machine driver.
 
 ## What changed from the old pipeline
 
 | Concern | Old | New |
 |---|---|---|
-| Distribution | `ParallelExecutor` SSH'd into `machines_pool.txt` and ran `docker/run_remote_pipeline.sh` per task | Submit jobs to the PCS coordinator (`CoordinatorClient`); it owns scheduling + workers |
+| Distribution | `ParallelExecutor` SSH'd into `machines_pool.txt` and ran `docker/run_remote_pipeline.sh` per task | Build + `docker run` each candidate locally (`LocalRunner`), one job at a time |
 | Reward injection | git-checkout an in-tree project + **regex** replace of a `@torch.jit.script` reward fn | Copy the tasks repo + **AST** rewrite of `_get_rewards` (`reward_injection.py`) |
 | Eval metric | `Episode/consecutive_successes` | `fitness_function` (logged by every task; matched by tag suffix) |
-| Result source | local TensorBoard path on the training host | downloaded job **artifacts tarball** (`logs/…/summaries/`) |
+| Result source | local TensorBoard path on the training host | per-job **artifacts tarball** (`logs/…/summaries/`) |
 | LLM target | a standalone reward fn returning `(total_reward, components)` | a whole `_get_rewards(self)` method returning the reward |
 
 ## Fitness isolation (task layer)
@@ -29,24 +28,22 @@ method called from `_get_dones` (a per-step method ARD never edits), from pure
 environment state. So ARD rewriting `_get_rewards` cannot alter or drop the
 scoreboard — that guarantee holds at the task layer, not just by convention.
 
-## Reward injection — why the pristine body is kept
+## Reward injection — direct method replacement
 
-With fitness gone, `_get_rewards` still carries load-bearing **side effects** in
-some tasks: franka refreshes intermediate values (also feeding observations);
-inhand re-samples the goal on success and maintains `consecutive_successes`;
-forge updates `prev_actions` / `success_pred_scale`.
+Two properties of the `ard-isaaclab-tasks` env layer let ARD swap rewards safely:
 
-So `reward_injection.inject_reward`:
+- The fixed **evaluation metric** (`fitness_function`) no longer lives in
+  `_get_rewards`. Each env computes it in `_get_dones` (via `_log_fitness`), from
+  environment state and independent of the reward — so rewriting the reward can
+  never alter the scoreboard.
+- `_get_rewards` has been **cleaned** of the load-bearing side effects it used to
+  carry (intermediate-value refresh, goal re-sampling, `prev_actions`
+  bookkeeping); those now live in their own hooks.
 
-1. keeps the **entire pristine `_get_rewards` body** (preserving those side effects),
-2. demotes its terminal `return <expr>` to a bare expression statement,
-3. appends `return self._ard_designed_reward()`, and
-4. adds the LLM's proposed method as `_ard_designed_reward(self)`.
-
-The LLM-designed reward is what gets returned; the task mechanics keep running.
-Fitness is safe regardless, since it is logged from `_get_dones` before the
-reward runs. (Once the remaining per-task mechanics are also relocated out of
-`_get_rewards`, the injector could be simplified to a clean full replacement.)
+With nothing left in `_get_rewards` but the reward computation itself,
+`reward_injection.inject_reward` simply **replaces the whole method** with the
+LLM's proposed `_get_rewards`, keeping the rest of the env file verbatim — no
+pristine body to preserve, no `_ard_designed_reward` indirection.
 
 ## Flow (one refinement iteration)
 
@@ -55,37 +52,38 @@ EurekaAgent.func_gen  ──►  N candidate _get_rewards methods
         │
 WorkspaceManager.build_codebase  ──►  per-candidate ard-isaaclab-tasks .tar.gz (reward injected)
         │
-CoordinatorClient.submit_job  ──►  POST /jobs  (project tarball + env={TASK,SEED})
-        │                          coordinator builds the Dockerfile per job and
-        │                          schedules across GPU workers
-CoordinatorClient.wait_for_all
+LocalRunner.submit_job  ──►  queue one job per candidate (env={TASK,SEED})
         │
-CoordinatorClient.download_artifacts  ──►  <tag>.tar.gz
+LocalRunner.wait_for_all  ──►  docker build + docker run each job, one at a time
         │
-ResultProcessor.process_artifacts  ──►  fitness_function + scalar summary
+LocalRunner.download_artifacts  ──►  <tag>.tar.gz
         │
-RewardEvaluator picks best ──► EurekaAgent.receive_feedback (run phase, then eval phase)
+ResultProcessor.capture  ──►  unpack artifacts + scalar summary
+        │
+FitnessScorer.score_all / select_best  ──►  read fitness_function, pick the batch winner
+        │
+EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run phase, then eval phase)
 ```
 
 ## Module map (`src/`)
 
-- `evaluation/coordinator_client.py` — PCS HTTP client (submit / poll / artifacts / cancel).
+- `evaluation/local_runner.py` — builds + `docker run`s each candidate locally (submit / wait / artifacts).
 - `evaluation/reward_injection.py` — AST splice of `_get_rewards` (+ fitness preservation).
 - `evaluation/workspace_manager.py` — builds per-candidate job codebases.
-- `evaluation/result_processor.py` — unpacks artifacts, reads `fitness_function`, summarizes.
-- `evaluation/evaluator.py` — `RewardEvaluator`, the orchestrator.
+- `evaluation/result_processor.py` — unpacks artifacts, writes the scalar summary.
+- `evaluation/scorer.py` — `FitnessScorer`: reads `fitness_function`, ranks candidates.
+- `evaluation/evaluator.py` — `RewardEvaluator`, the dispatch + capture orchestrator.
 - `refinement/llm_agent.py` — `EurekaAgent` (proposes `_get_rewards`, folds in feedback).
 - `refinement/agent_config/*.txt` — LLM prompt templates.
 
 ## Configuration
 
-- `configs/settings.yaml` — `tasks_repo`, `output_dir`, and the `coordinator` block
-  (`base_url`, `token_env`, `gpus`, `timeout_seconds`, `output_paths`, optional
-  `env`/`build_args`/`command_template`). PCS builds each job's Dockerfile — there
-  is no prebuilt image tag.
+- `configs/settings.yaml` — `tasks_repo`, `output_dir`, and the `runner` block
+  (`gpus`, `timeout_seconds`, `output_paths`, `image`, `work_root`, optional
+  `env`/`build_args`/`command_template`). Each job's Dockerfile is built locally —
+  there is no prebuilt image tag.
 - `configs/taskconfig.yaml` — `task`, `env_file` (the injection target), `description`, `max_iterations`.
 - `configs/refineconfig.yaml` — `iteration`, `num_eval`, `base_seed`, and the `agent` (LLM) block.
 
-Secrets come from the environment: `PCS_TOKEN` (coordinator bearer token) and
-`OPENROUTER_API_KEY` (LLM). Each job's training image is built by the worker from
-the submitted codebase's `Dockerfile` — nothing is prebuilt on the workers.
+The only secret is `OPENROUTER_API_KEY` (LLM). Each job's training image is built
+locally from the staged codebase's `Dockerfile` — nothing is prebuilt.

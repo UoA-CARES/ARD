@@ -1,8 +1,8 @@
 """
 Configuration and constants for the evaluation module.
 
-Defaults for coordinator-dispatched evaluation of LLM-proposed reward functions
-against the ard-isaaclab-tasks substrate.
+Defaults for local evaluation of LLM-proposed reward functions against the
+ard-isaaclab-tasks substrate.
 """
 
 # Name of the method ARD rewrites in each task env file (the "sole edit target").
@@ -14,22 +14,16 @@ REWARD_METHOD_NAME = "_get_rewards"
 # resolves (e.g. "Episode/fitness_function").
 FITNESS_METRIC = "fitness_function"
 
-# Default per-job wall-clock timeout requested from the coordinator (seconds).
-DEFAULT_TRAINING_TIMEOUT = 3600
+# Default per-job wall-clock timeout for a local training run (seconds).
+DEFAULT_TRAINING_TIMEOUT = 36000
 
 # Default number of GPUs requested per job.
 DEFAULT_GPUS = 1
 
-# Output paths collected by the coordinator into a job's artifacts tarball.
+# Output paths collected into a job's artifacts tarball.
 # scripts/pcs_entrypoint.sh writes the rl_games run under ``logs/`` relative to
 # the per-job mount, so that single directory carries everything ARD reads back.
 DEFAULT_OUTPUT_PATHS = ["logs"]
-
-# Seconds between coordinator status polls.
-DEFAULT_POLL_INTERVAL = 10.0
-
-# Environment variable that holds the coordinator bearer token (PCS convention).
-DEFAULT_TOKEN_ENV = "PCS_TOKEN"
 
 # TensorBoard summary size guidance (load all scalars, no histograms/images).
 from tensorboard.backend.event_processing import event_accumulator as _ea  # noqa: E402

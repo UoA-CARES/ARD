@@ -2,10 +2,8 @@
 # Run the ARD reward-refinement loop for one or more tasks.
 #
 # Prereqs:
-#   - A PCS coordinator reachable at settings.coordinator.base_url, with GPU
-#     workers registered. PCS builds each job's Dockerfile per submission, so no
-#     prebuilt training image needs to be present on the workers.
-#   - export PCS_TOKEN=pcs_...      # coordinator bearer token
+#   - docker available locally (with the NVIDIA runtime for GPU jobs). ARD builds
+#     each candidate's Dockerfile per job, so no prebuilt training image is needed.
 #   - export OPENROUTER_API_KEY=...     # LLM key
 #
 # Usage:

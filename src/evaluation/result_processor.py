@@ -1,5 +1,5 @@
 """
-Artifact capture for coordinator-dispatched training.
+Artifact capture for local training jobs.
 
 Each finished job is downloaded as an artifacts tarball containing the
 ``logs/`` tree produced by ``scripts/train.py`` (rl_games), i.e.

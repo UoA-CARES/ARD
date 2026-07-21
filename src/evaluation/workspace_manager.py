@@ -1,13 +1,11 @@
 """
-Workspace / codebase preparation for coordinator-dispatched evaluation.
+Workspace / codebase preparation for local evaluation.
 
 ARD trains against the ``ard-isaaclab-tasks`` repo. For each candidate reward we
 produce a self-contained ``.tar.gz`` of that repo with the proposed reward spliced
-into the task env file, ready to upload as a PCS job's codebase. The pristine repo
+into the task env file, ready to build as a job's docker context. The pristine repo
 is never mutated — every candidate gets a fresh copy in a temp directory.
-
-(This replaces the old git-checkout + regex injection against an in-tree Isaac
-project; injection is now AST-based — see :mod:`reward_injection`.)
+Injection is AST-based — see :mod:`reward_injection`.
 """
 
 import os
@@ -21,7 +19,7 @@ from .reward_injection import inject_reward, extract_method_source, RewardInject
 
 logger = logging.getLogger(__name__)
 
-# Files/dirs never shipped in a job codebase (mirrors the PCS test harness).
+# Files/dirs never shipped in a job codebase (kept out of the docker context).
 _TAR_EXCLUDE = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
 
 
@@ -46,8 +44,8 @@ class WorkspaceManager:
         self.tasks_repo = os.path.abspath(os.path.expanduser(tasks_repo))
         self.env_file_rel = env_file_rel
         # Resolve to an absolute path so staging/tarball locations are stable
-        # regardless of CWD (the coordinator/local backends read the tarball by
-        # path). ``mkdtemp`` already returns an absolute path.
+        # regardless of CWD (the local runner reads the tarball by path).
+        # ``mkdtemp`` already returns an absolute path.
         self.build_root = (
             os.path.abspath(os.path.expanduser(build_root))
             if build_root else tempfile.mkdtemp(prefix="ard_codebase_")
