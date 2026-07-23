@@ -84,6 +84,10 @@ class LocalRunner:
         self.image_repo = image.split(":", 1)[0]
         self.use_gpu = bool(use_gpu)
         self.run_as_user = run_as_user
+        # Name of the container currently running (one job at a time). Set while a
+        # `docker run` is in flight so `terminate()` can kill it if the batch is
+        # interrupted; None whenever nothing is running.
+        self._active_container: Optional[str] = None
         self._docker = shutil.which("docker")
         if not self._docker:
             raise LocalRunnerError(
@@ -187,6 +191,7 @@ class LocalRunner:
                 run_args += ["sh", "-c", command]
 
             logger.info(f"[{tag}] docker run (logs -> {log_path})")
+            self._active_container = name   # let terminate() kill it if interrupted
             try:
                 with open(log_path, "w") as log_fh:
                     proc = self._run(
@@ -214,6 +219,26 @@ class LocalRunner:
             # so this only frees this job's thin layers.
             self._run(["rmi", "-f", image], capture_output=True)
 
+        # Cleared only on the normal return path: on an interrupt the exception
+        # propagates past here with `_active_container` still set, so terminate()
+        # can find and kill the container this call left running.
+        self._active_container = None
         if result.status != "succeeded":
             logger.warning(f"[{tag}] {result.status}: {result.error}")
         return result
+
+    # ------------------------------------------------------------------- terminate
+    def terminate(self) -> None:
+        """Kill the job container currently running, if any.
+
+        Called when a batch is interrupted (e.g. Ctrl-C) so a killed evaluation
+        doesn't leave a training container running on the machine. The container
+        runs with ``--rm``, so killing it also removes it. Safe to call when
+        nothing is running.
+        """
+        name = self._active_container
+        if not name:
+            return
+        logger.warning(f"terminating running container {name}")
+        self._run(["kill", name], capture_output=True)
+        self._active_container = None

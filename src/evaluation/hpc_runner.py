@@ -39,7 +39,7 @@ import time
 import shutil
 import logging
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass
 
 from . import config
@@ -123,6 +123,10 @@ class HPCRunner:
         self.image_repo = image_repo
         self.nas_outputs = os.path.abspath(os.path.expanduser(nas_outputs))
         self.max_active_jobs = int(max_active_jobs)
+        # Job ids submitted this session that are still outstanding; poll() drops
+        # them as they reach a terminal status. terminate() cancels whatever is
+        # left if the batch is interrupted.
+        self._active_jobs: Set[str] = set()
 
         self._docker = shutil.which("docker")
         if not self._docker:
@@ -285,6 +289,7 @@ class HPCRunner:
             raise HPCRunnerError(f"submit failed for {job_name}: {e}")
 
         job_id = job_id_of(response)
+        self._active_jobs.add(job_id)
         logger.info(f"[{tag}] submitted {job_name}: {job_id}")
         return HPCJob(job_id=job_id, tag=tag, image=image, job_name=job_name)
 
@@ -300,12 +305,41 @@ class HPCRunner:
             logger.warning(f"[{job_id}] status poll failed: {e}")
             return "unknown"
         job = data.get("job", data) if isinstance(data, dict) else {}
-        return job.get("status", "unknown")
+        status = job.get("status", "unknown")
+        # Once a job is terminal it no longer needs cancelling, so drop it from the
+        # set terminate() acts on.
+        if self.is_terminal(status):
+            self._active_jobs.discard(job_id)
+        return status
 
     @staticmethod
     def is_terminal(status: str) -> bool:
         """True once a status will no longer change (job left the scheduler)."""
         return status in TERMINAL_STATUSES
+
+    # ------------------------------------------------------------------ terminate
+    def terminate(self) -> None:
+        """Cancel every outstanding job this runner has submitted.
+
+        Called when a batch is interrupted (e.g. Ctrl-C) so a killed evaluation
+        doesn't leave jobs training — and burning cluster time — on the scheduler.
+        ``poll`` drops jobs from the tracked set as they finish, so this only
+        cancels ones still active; individual cancel failures are logged, not
+        raised, so one bad id can't strand the rest.
+        """
+        for job_id in sorted(self._active_jobs):
+            logger.warning(f"cancelling HPC job {job_id}")
+            try:
+                self.client.cancel(job_id)
+            except HPCAuthenticationError:
+                try:
+                    self._relogin(self.client)
+                    self.client.cancel(job_id)
+                except HPCClientError as e:
+                    logger.warning(f"[{job_id}] cancel failed: {e}")
+            except HPCClientError as e:
+                logger.warning(f"[{job_id}] cancel failed: {e}")
+        self._active_jobs.clear()
 
     # ----------------------------------------------------------------- collect
     def collect(self, job_id: str, dest_dir: str) -> Optional[str]:

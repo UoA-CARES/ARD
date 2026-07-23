@@ -247,9 +247,17 @@ class RewardEvaluator:
                     record.eval_error = "workspace validation failed"
             return records
 
-        if self.backend == "hpc":
-            return self._evaluate_hpc(records)
-        return self._evaluate_local(records)
+        try:
+            if self.backend == "hpc":
+                return self._evaluate_hpc(records)
+            return self._evaluate_local(records)
+        except KeyboardInterrupt:
+            # Manual kill (Ctrl-C): stop whatever the backend left running so we
+            # don't strand a training container (local) or cluster jobs (hpc),
+            # then re-raise so the interrupt still tears the run down.
+            logger.warning("evaluation interrupted; terminating running jobs")
+            self.runner.terminate()
+            raise
 
     # ----------------------------------------------------------- local backend
     def _evaluate_local(self, records: List[RewardRecord]) -> List[RewardRecord]:
