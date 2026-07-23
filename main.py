@@ -183,7 +183,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         eval_records = [
             history.new_record(
                 iteration=i, index=k, phase="eval", tag=f"iter{i}_eval_{k}",
-                seed=base_seed + k, model=agent.model, temperature=agent.temperature,
+                seed=base_seed + k + 1, model=agent.model, temperature=agent.temperature,
                 reward_method=best.reward_method, raw_response=best.raw_response,
                 status=STATUS_GENERATED,
             )

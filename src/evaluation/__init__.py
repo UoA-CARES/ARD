@@ -5,10 +5,16 @@ ARD proposes reward functions, injects each into the ard-isaaclab-tasks substrat
 and trains each one on the local machine (one job at a time) via docker. This
 package owns codebase preparation, job execution, and result processing.
 
+The evaluator supports two execution backends: ``local`` builds + runs each
+candidate's Dockerfile on this machine one at a time; ``hpc`` builds + pushes each
+candidate's image and submits the batch to the CARES HPC Scheduler, training them
+concurrently and recycling artifacts from the NAS.
+
 Main classes:
 - RewardEvaluator:  dispatch + capture orchestrator (runs jobs, collects output)
 - FitnessScorer:    reads the fitness metric and selects the batch winner
 - LocalRunner:      builds + runs each candidate's Dockerfile locally
+- HPCRunner:        builds + pushes each candidate's image, drives the CARES scheduler
 - WorkspaceManager: builds per-candidate job codebases (AST reward injection)
 - ResultProcessor:  unpacks artifacts and writes the scalar summary
 
@@ -29,6 +35,7 @@ Example:
 from .evaluator import RewardEvaluator
 from .scorer import FitnessScorer
 from .local_runner import LocalRunner, LocalRunnerError
+from .hpc_runner import HPCRunner, HPCRunnerError, HPCJob
 from .workspace_manager import WorkspaceManager
 from .reward_injection import inject_reward, extract_method_source, RewardInjectionError
 from .result_processor import ResultProcessor, CapturedArtifacts
@@ -39,6 +46,9 @@ __all__ = [
     "FitnessScorer",
     "LocalRunner",
     "LocalRunnerError",
+    "HPCRunner",
+    "HPCRunnerError",
+    "HPCJob",
     "WorkspaceManager",
     "ResultProcessor",
     "CapturedArtifacts",

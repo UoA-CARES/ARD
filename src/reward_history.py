@@ -44,6 +44,7 @@ STATUS_PENDING = "pending"          # record created, nothing attempted yet
 STATUS_GENERATED = "generated"      # LLM produced a valid _get_rewards method
 STATUS_GEN_FAILED = "gen_failed"    # LLM never produced a valid method
 STATUS_BUILD_FAILED = "build_failed"   # reward injection / codebase build failed
+STATUS_SUBMITTED = "submitted"      # dispatched to the HPC scheduler, awaiting result
 STATUS_NO_METRICS = "no_metrics"    # job ran but left no usable TensorBoard logs
 # Terminal job states (succeeded / failed / timed_out) are stored verbatim.
 
@@ -67,9 +68,10 @@ class RewardRecord:
     reward_method: Optional[str] = None  # extracted _get_rewards source
     gen_error: Optional[str] = None      # why generation failed, if it did
 
-    # --- dispatch / evaluation (local runner) -------------------------------
+    # --- dispatch / evaluation (local runner / hpc scheduler) ---------------
     status: str = STATUS_PENDING
     eval_error: Optional[str] = None     # build/run failure detail
+    job_id: Optional[str] = None         # HPC scheduler job id (hpc backend only)
 
     # --- captured artifacts -------------------------------------------------
     log_path: Optional[str] = None       # extracted run dir

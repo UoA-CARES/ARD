@@ -1,15 +1,39 @@
 # ARD Stage 2 — Architecture
 
-ARD's reward-refinement loop is built around one external repo and a local runner:
+ARD's reward-refinement loop is built around one external repo and a pluggable
+execution backend (`runner.backend` in `configs/settings.yaml`):
 
 - **[`ard-isaaclab-tasks`](../ard-isaaclab-tasks)** — the IsaacLab task substrate.
   Six tasks registered as `Isaac-ARD-*`, each isolating its reward in a single
   `_get_rewards` method (the sole ARD edit target) and logging a fixed
   `fitness_function` evaluation metric.
-- **`LocalRunner`** — ARD builds each candidate's `Dockerfile` and `docker run`s
-  the training image on this machine, one candidate at a time, then reads the
-  `logs/` it wrote to its own work dir. There is no remote scheduler and no job
-  queue; ARD is a thin single-machine driver.
+- **`LocalRunner`** (`backend: local`) — ARD builds each candidate's `Dockerfile`
+  and `docker run`s the training image on this machine, one candidate at a time,
+  then reads the `logs/` it wrote to its own work dir. A thin single-machine driver.
+- **`HPCRunner`** (`backend: hpc`) — for the CARES HPC Scheduler. ARD builds +
+  pushes each candidate's image to the CARES registry, submits the whole batch,
+  and the jobs train **concurrently** on the cluster. As each finishes, its
+  artifacts are recycled from the NAS mount into `./runs` and read by the same
+  `ResultProcessor`. The evaluator, scorer, workspace staging, and result capture
+  are backend-agnostic — only dispatch differs (blocking `run` vs
+  `submit`/`poll`/`collect`).
+
+## HPC backend — reward delivery and the submit/monitor split
+
+The CARES scheduler *pulls a prebuilt image* and does not build from a working
+tree, so each candidate's injected `_get_rewards` is baked into **its own image
+tag**: ARD reuses the exact `.tar.gz` `WorkspaceManager` builds for local as the
+`docker build` context, tags it `<registry>/<image_repo>:<candidate-tag>`, and
+pushes it (an incremental push — only the `ard_tasks` + editable-install layers
+change). Two other scheduler quirks shape the code:
+
+- **Config rides the `command`, not `env`.** The scheduler drops the job `env`
+  block, so `task`/`seed`/tunables are packed into `hpc_entrypoint.sh` flags;
+  `runner.env`'s `MAX_ITERATIONS`/`NUM_ENVS` become `--max_iterations`/`--num_envs`.
+- **Outputs come back via the NAS.** Only `/workspace/output` is preserved, to
+  `/cares-nas/hpc/outputs/<upi>/<job_id>` (mounted locally at `runner.hpc.nas_outputs`).
+  The evaluator submits every candidate, polls each `job_id` until a terminal
+  status, then `collect`s `<nas_outputs>/<job_id>/` into `./runs/<task>/<tag>/`.
 
 ## What changed from the old pipeline
 
@@ -53,7 +77,10 @@ EurekaAgent.func_gen  ──►  N candidate _get_rewards methods
         │
 WorkspaceManager.build_codebase  ──►  per-candidate ard-isaaclab-tasks .tar.gz (reward injected)
         │
-LocalRunner.run  ──►  docker build + docker run each candidate, one at a time (env={TASK,SEED})
+   dispatch (backend):
+     local │  LocalRunner.run   ──►  docker build + docker run each candidate, one at a time (env={TASK,SEED})
+     hpc   │  HPCRunner.submit  ──►  docker build + push per-candidate image, submit all → cluster runs them concurrently
+           │  HPCRunner.poll / collect  ──►  await each job, recycle NAS/<job_id> → <output_dir>/<tag>/
         │
 ResultProcessor.capture  ──►  read <output_dir>/<tag>/logs + scalar summary
         │
@@ -65,6 +92,7 @@ EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run 
 ## Module map (`src/`)
 
 - `evaluation/local_runner.py` — builds + `docker run`s each candidate locally (one blocking `run`: build → run → result).
+- `evaluation/hpc_runner.py` — `HPCRunner`: builds + pushes each candidate's image and drives the CARES scheduler (`submit`/`poll`/`collect`).
 - `evaluation/reward_injection.py` — AST splice of `_get_rewards` (+ fitness preservation).
 - `evaluation/workspace_manager.py` — builds per-candidate job codebases.
 - `evaluation/result_processor.py` — reads the job's logs in place, writes the scalar summary.
@@ -75,10 +103,11 @@ EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run 
 
 ## Configuration
 
-- `configs/settings.yaml` — `tasks_repo`, `output_dir`, and the `runner` block
-  (`use_gpu`, `timeout_seconds`, `image`, optional
-  `env`/`build_args`/`command_template`). Each job's Dockerfile is built locally —
-  there is no prebuilt image tag.
+- `configs/settings.yaml` — `tasks_repo`, `output_dir`, and the `runner` block.
+  `runner.backend` picks `local` (`use_gpu`, `timeout_seconds`, `image`, optional
+  `env`/`build_args`/`command_template`; Dockerfile built locally, no prebuilt tag)
+  or `hpc` (a `runner.hpc` sub-block: `registry`, `image_repo`, `nas_outputs`,
+  `max_runtime_hours`, `poll_seconds`, `datasets`, …).
 - `configs/taskconfig.yaml` — `task`, `env_file` (the injection target), `description`, `max_iterations`.
 - `configs/refineconfig.yaml` — `iteration`, `num_eval`, `base_seed`, and the `agent` (LLM) block.
 

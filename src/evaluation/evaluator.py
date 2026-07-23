@@ -20,10 +20,14 @@ pure executor and leaves scoring a separate, swappable step.
 """
 
 import os
+import time
+import shlex
+import shutil
 import logging
 from typing import Dict, List, Optional
 
 from .local_runner import LocalRunner
+from .hpc_runner import HPCRunner, HPCRunnerError
 from .workspace_manager import WorkspaceManager
 from .reward_injection import RewardInjectionError
 from .result_processor import ResultProcessor
@@ -32,6 +36,7 @@ from src.reward_history import (
     RewardRecord,
     STATUS_GEN_FAILED,
     STATUS_BUILD_FAILED,
+    STATUS_SUBMITTED,
     STATUS_NO_METRICS,
 )
 
@@ -46,11 +51,19 @@ class RewardEvaluator:
         tasks_repo: Path to the ard-isaaclab-tasks checkout.
         env_file_rel: Task env file (relative to ``tasks_repo``) to inject into.
         task: Registered task ID, e.g. ``Isaac-ARD-Cartpole-v0``.
-        runner: Dict with local-runner settings: use_gpu, timeout_seconds, image,
-            env (extra container env passed to every job), build_args, and an
-            optional command_template override.
+        runner: Dict of backend settings. ``backend`` selects the execution path:
+            * ``local`` (default): use_gpu, timeout_seconds, image, env (extra
+              container env passed to every job), build_args, and an optional
+              command_template override. Jobs build + ``docker run`` one at a time.
+            * ``hpc``: an ``hpc`` sub-dict (registry, image_repo, nas_outputs,
+              max_runtime_hours, datasets, poll_seconds, job_name_prefix,
+              extra_args). Each candidate is built + pushed as its own image and
+              submitted to the CARES HPC Scheduler; the batch trains concurrently.
+              ``env`` MAX_ITERATIONS/NUM_ENVS are translated to command flags
+              because the scheduler drops the job env block.
         output_dir: Where each candidate's job runs and its logs land
-            (``<output_dir>/<tag>/``).
+            (``<output_dir>/<tag>/``). For the hpc backend this is where NAS
+            artifacts are recycled to.
         build_root: Optional staging dir for codebase tarballs.
     """
 
@@ -82,11 +95,8 @@ class RewardEvaluator:
         # entrypoint runs, configured entirely through `env`.
         self.command_template = runner.get("command_template")
 
-        # Build + run each job's Dockerfile on the local machine, one at a time.
-        self.client = LocalRunner(
-            image=runner.get("image", "ard-local"),
-            use_gpu=self.use_gpu,
-        )
+        self.backend = str(runner.get("backend", config.DEFAULT_BACKEND)).lower()
+
         self.workspace = WorkspaceManager(
             tasks_repo=tasks_repo,
             env_file_rel=env_file_rel,
@@ -94,15 +104,51 @@ class RewardEvaluator:
         )
         self.processor = ResultProcessor()
 
-        if not self.client.healthz():
-            logger.warning(
-                "local docker did not pass health check; runs may fail."
+        if self.backend == "hpc":
+            # Build + push each candidate's image, submit to the CARES scheduler,
+            # then recycle NAS artifacts. Jobs train concurrently on the cluster.
+            hpc = dict(runner.get("hpc", {}))
+            self.runner = HPCRunner(
+                registry=hpc.get("registry", config.DEFAULT_HPC_REGISTRY),
+                image_repo=hpc.get("image_repo", config.DEFAULT_HPC_IMAGE_REPO),
+                nas_outputs=hpc.get("nas_outputs", config.DEFAULT_HPC_NAS_OUTPUTS),
+                max_active_jobs=int(
+                    hpc.get("max_active_jobs", config.DEFAULT_HPC_MAX_ACTIVE_JOBS)
+                ),
             )
-        logger.info(
-            f"RewardEvaluator ready: task={task} backend=local docker "
-            f"gpu={'on' if self.use_gpu else 'off'} timeout={self.timeout_seconds}s "
-            f"(deploy-by-Dockerfile, env-driven)"
-        )
+            self.max_runtime_hours = float(
+                hpc.get("max_runtime_hours", config.DEFAULT_HPC_MAX_RUNTIME_HOURS)
+            )
+            self.datasets = list(hpc.get("datasets", []))
+            self.poll_seconds = float(
+                hpc.get("poll_seconds", config.DEFAULT_HPC_POLL_SECONDS)
+            )
+            self.job_name_prefix = hpc.get(
+                "job_name_prefix", config.DEFAULT_HPC_JOB_NAME_PREFIX
+            )
+            self.hpc_extra_args = str(hpc.get("extra_args", "") or "")
+            health = "reachable" if self.runner.healthz() else "UNREACHABLE"
+            logger.info(
+                f"RewardEvaluator ready: task={task} backend=hpc "
+                f"({self.runner.registry}/{self.runner.image_repo}) "
+                f"max_runtime={self.max_runtime_hours}h scheduler={health} "
+                f"(build+push per candidate, submit-all, monitor concurrently)"
+            )
+        else:
+            # Build + run each job's Dockerfile on the local machine, one at a time.
+            self.runner = LocalRunner(
+                image=runner.get("image", "ard-local"),
+                use_gpu=self.use_gpu,
+            )
+            if not self.runner.healthz():
+                logger.warning(
+                    "local docker did not pass health check; runs may fail."
+                )
+            logger.info(
+                f"RewardEvaluator ready: task={task} backend=local docker "
+                f"gpu={'on' if self.use_gpu else 'off'} timeout={self.timeout_seconds}s "
+                f"(deploy-by-Dockerfile, env-driven)"
+            )
 
     # ------------------------------------------------------------------ prompt
     def get_reward_template(self) -> str:
@@ -136,14 +182,48 @@ class RewardEvaluator:
             seed="" if seed is None else seed,
         )
 
+    def _build_hpc_command(self, seed: Optional[int]) -> str:
+        """Build the ``hpc_entrypoint.sh`` command for one job.
+
+        The CARES scheduler drops the job ``env`` block, so task/seed/tunables
+        must ride the ``command`` (unlike the local backend, which passes them as
+        env). ``MAX_ITERATIONS`` / ``NUM_ENVS`` from ``runner.env`` are therefore
+        translated into ``--max_iterations`` / ``--num_envs`` flags. (WANDB_* are
+        intentionally not forwarded: they cannot reach the container via command
+        without exposing the key in ``hpc-client jobs``.)
+        """
+        flags = ["--task", self.task]
+        if seed is not None:
+            flags += ["--seed", str(seed)]
+        if self.env_extra.get("MAX_ITERATIONS") is not None:
+            flags += ["--max_iterations", str(self.env_extra["MAX_ITERATIONS"])]
+        if self.env_extra.get("NUM_ENVS") is not None:
+            flags += ["--num_envs", str(self.env_extra["NUM_ENVS"])]
+
+        extra = self.hpc_extra_args
+        # Vision tasks instantiate a TiledCamera, which train.py only allows with
+        # --enable_cameras; add it here so the job doesn't fail minutes in on a
+        # worker (mirrors ard-isaaclab-tasks scripts/hpc_submit.py).
+        if "Vision" in self.task and "--enable_cameras" not in extra:
+            extra = f"{extra} --enable_cameras".strip()
+
+        command = config.HPC_ENTRYPOINT + " " + " ".join(shlex.quote(f) for f in flags)
+        if extra:
+            command += " " + extra
+        return command
+
     def evaluate(
         self,
         records: List[RewardRecord],
     ) -> List[RewardRecord]:
         """
-        Train a batch of candidate records one at a time and capture their output.
+        Train a batch of candidate records and capture their output.
 
-        Mutates each record in place: sets ``status``, ``eval_error`` and (on
+        Dispatches to the configured backend: the ``local`` backend builds +
+        ``docker run``s each candidate one at a time; the ``hpc`` backend builds +
+        pushes each candidate's image, submits the whole batch to the CARES
+        scheduler, then recycles NAS artifacts as jobs finish. Either way this
+        mutates each record in place: it sets ``status``, ``eval_error`` and (on
         success) the captured ``log_path`` / ``tb_path`` / ``summary_path``.
         Fitness and best-selection are left to :class:`FitnessScorer`.
         Training length is controlled by each task's ``max_epochs`` in its
@@ -167,12 +247,18 @@ class RewardEvaluator:
                     record.eval_error = "workspace validation failed"
             return records
 
+        if self.backend == "hpc":
+            return self._evaluate_hpc(records)
+        return self._evaluate_local(records)
+
+    # ----------------------------------------------------------- local backend
+    def _evaluate_local(self, records: List[RewardRecord]) -> List[RewardRecord]:
+        """Build -> run -> capture each candidate in turn on the local machine."""
         pending = [r for r in records if r.has_method]
         logger.info(f"Running {len(pending)} candidate(s), one at a time")
 
-        # Build -> run -> capture each candidate in turn. No queue, no artifacts
-        # tarball: the job writes its logs into <output_dir>/<tag>/ and we read
-        # them there.
+        # No queue, no artifacts tarball: the job writes its logs into
+        # <output_dir>/<tag>/ and we read them there.
         for record in records:
             if not record.has_method:
                 record.status = STATUS_GEN_FAILED
@@ -186,7 +272,7 @@ class RewardEvaluator:
                 record.eval_error = f"injection: {e}"
                 continue
 
-            result = self.client.run(
+            result = self.runner.run(
                 tarball_path=tarball,
                 work_dir=os.path.join(self.output_dir, tag),
                 env=self._build_env(record.seed),
@@ -207,5 +293,112 @@ class RewardEvaluator:
             record.log_path = captured.log_path
             record.tb_path = captured.tb_path
             record.summary_path = captured.summary_path
+
+        return records
+
+    # ------------------------------------------------------------- hpc backend
+    def _evaluate_hpc(self, records: List[RewardRecord]) -> List[RewardRecord]:
+        """Submit the whole batch to the CARES scheduler, then recycle as they finish.
+
+        Two phases so jobs train *concurrently* on the cluster:
+          A. Submit — stage + inject + build + push + submit each candidate.
+          B. Monitor + recycle — poll every outstanding job; as each reaches a
+             terminal status, copy its NAS artifacts into <output_dir>/<tag>/ and
+             capture them in place (same ResultProcessor as local).
+        """
+        pending = [r for r in records if r.has_method]
+
+        # Respect the scheduler's active-job cap up front (mirrors hpc_submit.py):
+        # a mid-batch rejection would strand already-submitted jobs.
+        active = self.runner.active_job_count()
+        if active + len(pending) > self.runner.max_active_jobs:
+            msg = (
+                f"{active} active job(s) + {len(pending)} new would exceed the "
+                f"{self.runner.max_active_jobs}-job scheduler cap; submit a "
+                f"smaller batch or wait for running jobs to finish"
+            )
+            logger.error(msg)
+            for record in pending:
+                record.status = STATUS_BUILD_FAILED
+                record.eval_error = msg
+            return records
+
+        # --- Phase A: submit every candidate ---------------------------------
+        handles: Dict[str, RewardRecord] = {}   # job_id -> record
+        for record in records:
+            if not record.has_method:
+                record.status = STATUS_GEN_FAILED
+                continue
+            tag = record.tag
+            try:
+                tarball = self.workspace.build_codebase(record.reward_method, tag)
+            except RewardInjectionError as e:
+                logger.error(f"[{tag}] reward injection failed: {e}")
+                record.status = STATUS_BUILD_FAILED
+                record.eval_error = f"injection: {e}"
+                continue
+            try:
+                job = self.runner.submit(
+                    tarball_path=tarball,
+                    tag=tag,
+                    command=self._build_hpc_command(record.seed),
+                    max_runtime_hours=self.max_runtime_hours,
+                    datasets=self.datasets,
+                    job_name=f"{self.job_name_prefix}_{tag}",
+                )
+            except HPCRunnerError as e:
+                logger.error(f"[{tag}] submit failed: {e}")
+                record.status = STATUS_BUILD_FAILED
+                record.eval_error = f"submit: {e}"
+                continue
+            record.job_id = job.job_id
+            record.status = STATUS_SUBMITTED
+            handles[job.job_id] = record
+
+        if not handles:
+            logger.error("No candidates were submitted to the HPC scheduler")
+            return records
+
+        # --- Phase B: monitor + recycle --------------------------------------
+        logger.info(
+            f"Monitoring {len(handles)} HPC job(s); polling every "
+            f"{self.poll_seconds:.0f}s"
+        )
+        outstanding = set(handles)
+        while outstanding:
+            for job_id in list(outstanding):
+                status = self.runner.poll(job_id)
+                if not self.runner.is_terminal(status):
+                    continue
+                outstanding.discard(job_id)
+                record = handles[job_id]
+                if status != "completed":
+                    logger.warning(f"[{record.tag}] job {job_id} {status}")
+                    record.status = "failed"
+                    record.eval_error = f"hpc job {status}"
+                    continue
+
+                # Recycle: copy the NAS artifacts into the job's work dir, then
+                # read them exactly as the local backend does.
+                work_dir = os.path.join(self.output_dir, record.tag)
+                if os.path.exists(work_dir):
+                    shutil.rmtree(work_dir, ignore_errors=True)
+                collected = self.runner.collect(job_id, work_dir)
+                if collected is None:
+                    record.status = STATUS_NO_METRICS
+                    record.eval_error = "completed but no NAS output"
+                    continue
+                captured = self.processor.capture(work_dir)
+                if captured is None:
+                    record.status = STATUS_NO_METRICS
+                    record.eval_error = "no usable TensorBoard logs"
+                    continue
+                record.log_path = captured.log_path
+                record.tb_path = captured.tb_path
+                record.summary_path = captured.summary_path
+                record.status = "succeeded"
+                logger.info(f"[{record.tag}] completed and captured")
+            if outstanding:
+                time.sleep(self.poll_seconds)
 
         return records
