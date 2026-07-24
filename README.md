@@ -104,11 +104,7 @@ To refine a different task, point `taskconfig.yaml` at it (`task` + `env_file`):
 | Task ID | Env file (under `ard-isaaclab-tasks`) |
 |---|---|
 | `Isaac-ARD-Cartpole-v0` | `…/tasks/direct/cartpole/cartpole_env.py` |
-| `Isaac-ARD-Humanoid-v0` | `…/tasks/direct/locomotion/locomotion_env.py` |
-| `Isaac-ARD-Franka-Cabinet-v0` | `…/tasks/direct/franka_cabinet/franka_cabinet_env.py` |
-| `Isaac-ARD-Allegro-Repose-v0` | `…/tasks/direct/inhand_manipulation/inhand_manipulation_env.py` |
-| `Isaac-ARD-Forge-NutThread-v0` | `…/tasks/direct/forge/forge_env.py` |
-| `Isaac-ARD-Shadow-Hand-Over-v0` | `…/tasks/direct/shadow_hand_over/shadow_hand_over_env.py` |
+| `Isaac-ARD-Repose-Cube-Shadow-Direct-v0` | `…/tasks/direct/shadow_hand/shadow_hand_env.py` |
 
 ## Output
 

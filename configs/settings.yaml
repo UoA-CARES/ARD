@@ -38,7 +38,7 @@ runner:
   # GPU: true attaches the local GPU (docker run --gpus all); false runs
   # CPU-only. One candidate runs at a time — there is no fractional-GPU request.
   use_gpu: true
-  timeout_seconds: 36000
+  timeout_seconds: 7200
   # Extra container env applied to every job. On the local backend the entrypoint
   # reads these; on the hpc backend the scheduler DROPS the job env block, so ARD
   # translates MAX_ITERATIONS/NUM_ENVS into --max_iterations/--num_envs command

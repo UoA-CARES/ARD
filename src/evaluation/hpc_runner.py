@@ -144,8 +144,9 @@ class HPCRunner:
     # --------------------------------------------------------------- auth/health
     def _connect(self) -> "HPCClient":
         """Load the stored session, re-logging in with $HPC_PASSWORD if expired."""
-        try:
-            client = HPCClient.from_config()
+        try:  
+            scheduler_url = HPCConfig.load().scheduler_url
+            client = HPCClient(scheduler_url=scheduler_url)
         except RuntimeError as error:
             raise HPCRunnerError(
                 f"{error}\nConfigure the client first:\n"
