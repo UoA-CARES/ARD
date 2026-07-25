@@ -44,12 +44,9 @@ STATUS_PENDING = "pending"          # record created, nothing attempted yet
 STATUS_GENERATED = "generated"      # LLM produced a valid _get_rewards method
 STATUS_GEN_FAILED = "gen_failed"    # LLM never produced a valid method
 STATUS_BUILD_FAILED = "build_failed"   # reward injection / codebase build failed
-STATUS_SUBMIT_FAILED = "submit_failed"  # coordinator rejected the job
-STATUS_SUBMITTED = "submitted"      # job accepted, training in flight
-STATUS_NO_ARTIFACTS = "no_artifacts"   # job finished but produced nothing
-STATUS_NO_METRICS = "no_metrics"    # artifacts had no usable TensorBoard logs
-# Terminal coordinator states (succeeded / failed / cancelled / timed_out) are
-# stored verbatim.
+STATUS_SUBMITTED = "submitted"      # dispatched to the HPC scheduler, awaiting result
+STATUS_NO_METRICS = "no_metrics"    # job ran but left no usable TensorBoard logs
+# Terminal job states (succeeded / failed / timed_out) are stored verbatim.
 
 
 @dataclass
@@ -71,10 +68,10 @@ class RewardRecord:
     reward_method: Optional[str] = None  # extracted _get_rewards source
     gen_error: Optional[str] = None      # why generation failed, if it did
 
-    # --- dispatch / evaluation (coordinator) --------------------------------
-    job_id: Optional[str] = None
+    # --- dispatch / evaluation (local runner / hpc scheduler) ---------------
     status: str = STATUS_PENDING
-    eval_error: Optional[str] = None     # build/submit/run failure detail
+    eval_error: Optional[str] = None     # build/run failure detail
+    job_id: Optional[str] = None         # HPC scheduler job id (hpc backend only)
 
     # --- captured artifacts -------------------------------------------------
     log_path: Optional[str] = None       # extracted run dir

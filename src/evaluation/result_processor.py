@@ -1,12 +1,12 @@
 """
-Artifact capture for coordinator-dispatched training.
+Artifact capture for local training jobs.
 
-Each finished job is downloaded as an artifacts tarball containing the
-``logs/`` tree produced by ``scripts/train.py`` (rl_games), i.e.
+Each finished job leaves its ``logs/`` tree in its own ``work_dir`` (the ``/work``
+mount), produced by ``scripts/train.py`` (rl_games), i.e.
 ``logs/rl_games/<config>/<run>/summaries/events.out.tfevents.*`` plus params and
-checkpoints. This module's job is strictly **capture**: unpack the tarball,
-locate the TensorBoard event file, and write a human-readable scalar summary
-(used as LLM feedback).
+checkpoints. This module's job is strictly **capture**: locate the TensorBoard
+event file under that dir and write a human-readable scalar summary (used as LLM
+feedback). Nothing is packed or unpacked — the logs are read where they landed.
 
 It deliberately does **not** read the fitness metric or pick a winner — that
 judgement lives in :mod:`src.evaluation.scorer`. Keeping capture and judgement
@@ -17,7 +17,6 @@ output", while scoring is a separate, swappable step.
 import os
 import glob
 import logging
-import tarfile
 from typing import Optional
 from dataclasses import dataclass
 
@@ -40,24 +39,16 @@ def load_accumulator(tb_file: str):
 
 @dataclass
 class CapturedArtifacts:
-    """Paths captured from a finished job's artifacts (no metric judgement)."""
-    log_path: str            # extracted run directory (holds summaries/, params/, nn/)
+    """Paths captured from a finished job's logs (no metric judgement)."""
+    log_path: str            # rl_games run directory (holds summaries/, params/, nn/)
     tb_path: str             # path to the TensorBoard event file
     summary_path: str        # path to the generated training_summary.txt
 
 
 class ResultProcessor:
-    """Unpacks job artifacts and writes the scalar summary used for feedback."""
+    """Reads a job's in-place logs and writes the scalar summary used for feedback."""
 
-    # ---------------------------------------------------------------- unpack
-    @staticmethod
-    def extract_artifacts(tarball_path: str, dest_dir: str) -> str:
-        """Extract an artifacts tarball into ``dest_dir`` and return that dir."""
-        os.makedirs(dest_dir, exist_ok=True)
-        with tarfile.open(tarball_path, "r:gz") as tar:
-            tar.extractall(dest_dir)
-        return dest_dir
-
+    # ---------------------------------------------------------------- locate
     @staticmethod
     def find_event_file(root: str) -> Optional[str]:
         """Find the TensorBoard event file under ``root`` (prefers a summaries/ dir)."""
@@ -74,24 +65,16 @@ class ResultProcessor:
         return candidates[0]
 
     # --------------------------------------------------------------- capture
-    def capture(
-        self, tarball_path: str, dest_dir: str
-    ) -> Optional[CapturedArtifacts]:
+    def capture(self, work_dir: str) -> Optional[CapturedArtifacts]:
         """
-        Unpack ``tarball_path`` and write its scalar summary.
+        Locate the job's logs under ``work_dir`` and write their scalar summary.
 
         Returns the captured paths, or None if no usable TensorBoard logs are
         found. Does not read fitness — see :mod:`src.evaluation.scorer`.
         """
-        try:
-            self.extract_artifacts(tarball_path, dest_dir)
-        except (tarfile.TarError, OSError) as e:
-            logger.error(f"Failed to extract artifacts at {dest_dir}: {e}")
-            return None
-
-        tb_path = self.find_event_file(dest_dir)
+        tb_path = self.find_event_file(work_dir)
         if not tb_path:
-            logger.error(f"No TensorBoard event file in artifacts at {dest_dir}")
+            logger.error(f"No TensorBoard event file under {work_dir}")
             return None
 
         run_dir = os.path.dirname(os.path.dirname(tb_path)) \

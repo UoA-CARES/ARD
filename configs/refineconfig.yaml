@@ -1,8 +1,8 @@
 # Eureka refinement parameters
 iteration: 5    # how many refinement iterations to run
-num_eval: 4     # times the best reward is re-trained to score it (the eval phase)
-base_seed: 42   # eval-phase seeds are base_seed + k (passed to each job as env SEED -> train.py --seed)
-
+num_eval: 5    # times the best reward is re-trained to score it (the eval phase)
+base_seed: 42   # eval-phase seeds are base_seed + k + 1 (passed to each job as env SEED -> train.py --seed)
+max_workers: 48
 
 # Eureka agent (LLM) settings
 agent:

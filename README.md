@@ -1,74 +1,77 @@
-# ARD — Autonomous RL Designer
+# ARD (Autonomous RL Designer)
 
-ARD is an LLM-driven reward-design pipeline for reinforcement learning in NVIDIA
-Isaac Lab. Given a task described in plain language, an LLM proposes reward
-functions, ARD trains each one with PPO and scores it on a fixed evaluation
-metric, then feeds the results back to the LLM to iterate — an Eureka-style loop
-that searches for a reward that actually solves the task.
+ARD is an LLM-driven reward-design pipeline for reinforcement learning in NVIDIA Isaac Lab. You describe a task in plain language, an LLM proposes reward functions, ARD trains each one with PPO and scores it on a fixed evaluation metric, then feeds the results back to the LLM so it can improve the next batch. This is an Eureka-style loop: it searches for a reward that actually solves the task.
 
-ARD is a **thin orchestrator**. It does not train locally and does not manage
-machines. It is a client of two companion repos:
+ARD is a **thin orchestrator**. It does not carry the Isaac Lab / rl_games stack itself; each candidate trains inside a docker container. It depends on one companion repo:
 
-- **[`ard-isaaclab-tasks`](../ard-isaaclab-tasks)** — the RL task substrate. Six
-  tasks registered as `Isaac-ARD-*`, each isolating its reward in a single
-  `_get_rewards` method (ARD's edit target) and logging a fixed `fitness_function`
-  evaluation metric from `_get_dones`, independent of the reward.
-- **[`parallel_coordination_system`](../parallel_coordination_system)** (PCS) — a
-  coordinator that schedules containerised training jobs across a pool of GPU
-  workers. ARD submits jobs to it over HTTP.
+- **[`ard-isaaclab-tasks`](../ard-isaaclab-tasks)**, the RL task substrate. Three tasks are registered as `Isaac-ARD-*`, each isolating its reward in a single `_get_rewards` method (ARD's edit target) and logging a fixed `fitness_function` evaluation metric from `_get_dones`, independent of the reward.
+
+For each candidate, ARD builds that repo's `Dockerfile`, then either `docker run`s it on the local machine one candidate at a time (`LocalRunner`), or builds, pushes, and submits it to the CARES HPC Scheduler, where the whole batch trains concurrently (`HPCRunner`). Which path is used is set by `runner.backend` in `configs/settings.yaml`. LLM generation is fanned out across threads either way; only the training step differs between backends.
+
+## What's new in v0.3.0
+
+- **HPC support.** Set `runner.backend: hpc` to train a whole batch of candidates at once on the CARES HPC Scheduler, instead of one at a time locally. See [Prerequisites](#prerequisites) and [Configuration](#configuration) below.
+- **Updated task set.** `ard-isaaclab-tasks` dropped its older multi-task suite (Humanoid, Franka-Cabinet, Allegro-Repose, Forge-NutThread, Shadow-Hand-Over; still available at tag `v0.2.0`) in favor of three tasks: Cartpole, Shadow Hand Repose, and Shadow Hand Repose Vision. See the [task table](#running) below.
 
 ## How the loop works
 
 ```
-                    ┌──────────────────────── ARD (this repo) ───────────────────────┐
-  task description ─►  EurekaAgent ── proposes N _get_rewards methods                  │
-                    │      ▲                          │                                │
-                    │      │ feedback             AST inject each into a fresh         │
-                    │      │ (fitness +           copy of ard-isaaclab-tasks           │
-                    │      │  scalar summary)         │                                │
-                    │   best run                  tar.gz codebase per candidate        │
-                    │      │                          │                                │
-                    │   ResultProcessor ◄── artifacts ── CoordinatorClient ──POST /jobs┼──► PCS coordinator
-                    └──────────────────────────────────────────────────────────────────┘        │
-                                                                                         schedules across
-                                                                                         GPU workers; trains
-                                                                                         PPO (rl_games); scores
-                                                                                         by fitness_function
+                    ┌───────────────────── ARD (this repo) ─────────────────────┐
+  task description ─►  EurekaAgent: proposes N _get_rewards methods              │
+                    │      ▲                        │                           │
+                    │      │ feedback           AST inject each into a fresh    │
+                    │      │ (fitness +         copy of ard-isaaclab-tasks      │
+                    │      │  scalar summary)       │                           │
+                    │   best run                tar.gz codebase per candidate   │
+                    │      │                        │                           │
+                    │   ResultProcessor ◄── logs ── Runner (local or HPC)       │
+                    └──────────────────────────────────────────────────────────┘
+                        local backend: builds + docker runs one candidate at a time
+                        hpc backend:   builds, pushes, and submits the whole batch at once
+                        either way, trains PPO (rl_games) and scores by fitness_function
 ```
 
 One refinement iteration:
 
 1. **Generate.** The LLM proposes `sample` candidate `_get_rewards(self)` methods.
-2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks`
-   via AST and packed into a `.tar.gz` codebase.
-3. **Dispatch.** Each codebase (with its `Dockerfile`) is submitted as a job to
-   the coordinator, which **builds it per job** and runs them concurrently across
-   its GPU workers. The task is selected via the job's `env` (`TASK`, plus `SEED`
-   for eval runs), read by the image's entrypoint.
-4. **Score.** Finished jobs are downloaded; each is scored by its
-   `fitness_function` (read from the training TensorBoard logs).
-5. **Re-evaluate & feed back.** The best candidate is retrained `num_eval` times,
-   and its training summary is fed back to the LLM to inform the next iteration.
+2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks` via AST and packed into a `.tar.gz` codebase.
+3. **Run.** Each codebase (with its `Dockerfile`) is trained according to `runner.backend`: the local backend builds and `docker run`s each candidate in turn; the HPC backend builds, pushes, and submits the whole batch to the CARES scheduler and trains it concurrently. Either way the task is selected via the job's config (`TASK`, plus `SEED` for eval runs).
+4. **Score.** Each finished job's `logs/` are read from its work dir; each is scored by its `fitness_function` (from the training TensorBoard logs).
+5. **Re-evaluate & feed back.** The best candidate is retrained `num_eval` times, and its training summary is fed back to the LLM to inform the next iteration.
 
-The evaluation metric is **isolated in the task layer** — it lives in each task's
-`_get_dones`, not `_get_rewards` — so the LLM can rewrite the reward freely
-without ever altering the scoreboard it is judged on. See
-[`ARCHITECTURE.md`](ARCHITECTURE.md) for the injection mechanism and design
-rationale.
+The evaluation metric is **isolated in the task layer**: it lives in each task's `_get_dones`, not `_get_rewards`, so the LLM can rewrite the reward freely without ever altering the scoreboard it is judged on. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the injection mechanism and design rationale.
 
 ## Prerequisites
 
-- A **PCS coordinator** reachable over HTTP, with GPU workers registered. PCS is
-  deploy-by-Dockerfile: each job ships the `ard-isaaclab-tasks` codebase (with its
-  `Dockerfile`) and the worker **builds it per job**, so no training image needs to
-  be prebuilt on the workers. See the PCS repo for standing one up.
-- A local checkout of **`ard-isaaclab-tasks`** (referenced by `configs/settings.yaml`).
-- An LLM endpoint (OpenRouter-compatible by default).
-- Python 3.10+. ARD's own dependencies are light (no Isaac Lab needed locally):
+Common to both backends:
 
-```bash
-pip install -r requirements.txt
-```
+- Python 3.10+. ARD's own dependencies are light (no Isaac Lab needed on the host):
+
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+- A local checkout of **`ard-isaaclab-tasks`** (path set in `configs/settings.yaml`).
+- An LLM endpoint (OpenRouter-compatible by default).
+
+**Local backend** (`runner.backend: local`, the default):
+
+- **docker** on the local machine, with the NVIDIA container runtime for GPU jobs (`--gpus all`). ARD builds the `ard-isaaclab-tasks` `Dockerfile` per job, so no training image needs to be prebuilt.
+
+**HPC backend** (`runner.backend: hpc`, for the CARES HPC Scheduler):
+
+- **docker** on the local machine, to build and push each candidate's image.
+- the **hpc-client** package, installed and logged in:
+
+  ```bash
+  pip install -e /path/to/hpc-client
+  hpc-client configure --scheduler-url http://<scheduler-host>:8080
+  hpc-client login <upi>
+  ```
+
+  Also set `HPC_PASSWORD` so ARD can relogin automatically if this session expires mid-run; see [Secrets](#secrets) below.
+
+- the CARES registry trusted as an insecure registry so `docker push` works (see `ard-isaaclab-tasks/docs/HPC.md` for the one-time Docker config).
 
 ## Configuration
 
@@ -76,113 +79,84 @@ Three YAML files under `configs/`:
 
 | File | What it sets |
 |---|---|
-| `settings.yaml` | `tasks_repo`, `output_dir`, and the `coordinator` block (`base_url`, `token_env`, `gpus`, `timeout_seconds`, `output_paths`, optional `env`/`build_args`/`command_template`). |
+| `settings.yaml` | `tasks_repo`, `output_dir`, `build_root`, and the `runner` block (see below). |
 | `taskconfig.yaml` | The task: `task` (e.g. `Isaac-ARD-Cartpole-v0`), `env_file` (the env whose `_get_rewards` is rewritten), `description` (the LLM's brief), `max_iterations`. |
 | `refineconfig.yaml` | The loop: `iteration`, `num_eval`, `base_seed`, and the `agent` block (`model`, `base_url`, `sample`, `temperature`). |
 
-Secrets come from the environment, never the configs:
+`runner.backend` in `settings.yaml` picks how candidates train:
 
-```bash
-export PCS_TOKEN=pcs_...        # coordinator bearer token
-export OPENROUTER_API_KEY=...      # LLM key
-```
+- `local`: `use_gpu`, `timeout_seconds`, `image`, and optional `env` / `build_args` / `command_template`.
+- `hpc`: an `hpc` block with `registry`, `image_repo`, `nas_outputs`, `max_runtime_hours`, `poll_seconds`, `datasets`, `job_name_prefix`, `extra_args`.
+
+See the comments in `configs/settings.yaml` for what each key does.
+
+### Secrets
+
+Secrets come from the environment, never the configs. Add them to your shell's startup file so every new terminal has them, instead of exporting them by hand each time:
+
+1. Open `~/.bashrc` in an editor.
+2. Add these lines at the end:
+
+   ```bash
+   export OPENROUTER_API_KEY=...      # LLM key, required for every run
+   export HPC_PASSWORD=...            # HPC backend only, lets ARD relogin automatically
+   ```
+
+3. Reload it in your current shell:
+
+   ```bash
+   source ~/.bashrc
+   ```
+
+`OPENROUTER_API_KEY` is always required. `HPC_PASSWORD` only matters with `runner.backend: hpc`: without it, an expired `hpc-client` session stops the run and asks you to run `hpc-client login` again by hand instead of ARD recovering on its own.
 
 ## Running
 
 ```bash
 python main.py --refine
+# a specific task by name (resolves its ard_meta.yaml in tasks_repo):
+python main.py --refine --task cartpole
 # explicit configs:
 python main.py --refine --settings configs/settings.yaml \
                --taskconfig configs/taskconfig.yaml \
                --refineconfig configs/refineconfig.yaml
-# several tasks in sequence:
-bash scripts/runrefine.sh
 ```
 
-To refine a different task, point `taskconfig.yaml` at it (`task` + `env_file`):
+To refine a different task, either point `taskconfig.yaml` at it (`task` + `env_file`) or pass `--task` with the directory name or the registered task ID:
 
-| Task ID | Env file (under `ard-isaaclab-tasks`) |
-|---|---|
-| `Isaac-ARD-Cartpole-v0` | `…/tasks/direct/cartpole/cartpole_env.py` |
-| `Isaac-ARD-Humanoid-v0` | `…/tasks/direct/locomotion/locomotion_env.py` |
-| `Isaac-ARD-Franka-Cabinet-v0` | `…/tasks/direct/franka_cabinet/franka_cabinet_env.py` |
-| `Isaac-ARD-Allegro-Repose-v0` | `…/tasks/direct/inhand_manipulation/inhand_manipulation_env.py` |
-| `Isaac-ARD-Forge-NutThread-v0` | `…/tasks/direct/forge/forge_env.py` |
-| `Isaac-ARD-Shadow-Hand-Over-v0` | `…/tasks/direct/shadow_hand_over/shadow_hand_over_env.py` |
+| Task (`--task`) | Task ID | Env file (under `ard-isaaclab-tasks`) | Use for |
+|---|---|---|---|
+| `cartpole` | `Isaac-ARD-Cartpole-v0` | `…/tasks/direct/cartpole/cartpole_env.py` | smoke test |
+| `shadow_hand` | `Isaac-ARD-Repose-Cube-Shadow-Direct-v0` | `…/tasks/direct/shadow_hand/shadow_hand_env.py` | full task, state observations |
+| `shadow_hand_vision` | `Isaac-ARD-Repose-Cube-Shadow-Vision-Direct-v0` | `…/tasks/direct/shadow_hand_vision/shadow_hand_vision_env.py` | full task, vision observations |
 
-## Running in Docker
-
-ARD ships a `Dockerfile` that packages the orchestrator (CPU-only, plus the
-docker CLI). The recommended entry point is `scripts/docker_run.sh`, which reads
-`coordinator.mode` and `tasks_repo` from your settings file and wires the right
-container for that backend:
-
-```bash
-export OPENROUTER_API_KEY=...        # always
-export PCS_TOKEN=pcs_...             # coordinator mode only
-scripts/docker_run.sh --build -- --refine --task cartpole
-```
-
-Each backend needs different plumbing:
-
-- **`coordinator` mode** — ARD is a pure HTTP client of the PCS coordinator, so
-  the container needs no GPU and no docker socket. It only mounts the
-  `ard-isaaclab-tasks` checkout (read-only, to stage codebase tarballs) and your
-  `runs/`. `docker compose` covers this path too:
-
-  ```bash
-  export TASKS_REPO=/path/to/ard-isaaclab-tasks
-  docker compose run --rm ard --refine --task cartpole
-  ```
-
-- **`local` mode** — ARD builds + runs **one GPU task container per evaluation**
-  from `ard-isaaclab-tasks`. The ARD container drives the **host** docker daemon
-  (docker-out-of-docker): `docker_run.sh` mounts `/var/run/docker.sock` and binds
-  both this repo and `tasks_repo` at their **identical host paths**. That path
-  matching is required — the per-job `work_dir` ARD hands to `docker run -v` is
-  resolved by the host daemon, so it must name a real host path. The launcher
-  also runs the container as your uid:gid (with `--group-add docker`) so the
-  files it and its task containers write stay owned by you.
-
-> Note: the GPU work happens in the **task** containers ARD launches, not in the
-> ARD container itself — so the ARD image carries no Isaac Lab / rl_games stack.
-> On the CARES shared HPC machines, docker-out-of-docker is disallowed; use
-> coordinator mode there (see `scripts/cares_run.sh`).
+The vision task does not run on the HPC backend yet (an RTX renderer issue on the worker GPUs); run it locally or in Docker instead.
 
 ## Output
 
 Per task, under `output_dir/<task>/` (default `./runs/<task>/`):
 
-- downloaded job artifacts (`<tag>.tar.gz`) and their extracted `logs/` trees,
-- per-run `training_record/training_summary.txt` — the scalar summary fed to the LLM,
+- one directory per candidate, `<tag>/`, holding its `logs/` tree. The local backend writes here directly; the HPC backend copies the finished job's artifacts down from the NAS first. Either way, nothing is packed or re-downloaded once it lands.
+- per-run `training_record/training_summary.txt`, the scalar summary fed to the LLM.
 - console logs reporting each iteration's best candidate and its fitness.
 
 ## Repository layout
 
 ```
-main.py                       CLI entry point + the refinement loop
+main.py                       CLI entry point and the refinement loop
 configs/
-  settings.yaml               coordinator endpoint, tasks_repo, output_dir
-  taskconfig.yaml             task id, env file, description, max_iterations
-  refineconfig.yaml           iterations, eval count, LLM agent settings
-scripts/runrefine.sh          run the loop over one or more task configs
+  settings.yaml                runner backend (local/hpc), tasks_repo, output_dir
+  taskconfig.yaml               task id, env file, description, max_iterations
+  refineconfig.yaml             iterations, eval count, LLM agent settings
 src/
-  evaluation/
-    coordinator_client.py     PCS HTTP client (submit / poll / artifacts / cancel)
-    reward_injection.py       AST splice of the LLM reward into _get_rewards
-    workspace_manager.py      build per-candidate job codebases (.tar.gz)
-    result_processor.py       unpack artifacts, read fitness_function, summarize
-    evaluator.py              RewardEvaluator — the orchestrator
+  evaluation/                  builds and trains each candidate (local docker or
+                                HPC), stages per-candidate codebases, captures results
   refinement/
-    llm_agent.py              EurekaAgent — proposes rewards, folds in feedback
-    agent_config/*.txt        LLM prompt templates
-ARCHITECTURE.md               design notes: dispatch, injection, fitness isolation
+    llm_agent.py                EurekaAgent: proposes rewards, folds in feedback
+ARCHITECTURE.md               design notes: execution, injection, fitness isolation
 ```
 
 ## Notes
 
-- Training itself never runs in this repo — it runs in the coordinator's workers
-  inside the Isaac Lab image. ARD only needs an HTTP client and TensorBoard to
-  read results, so it installs nothing from the Isaac Lab / rl_games stack.
-- The coordinator does not auto-retry failed jobs; a failed candidate is recorded
-  with its error and the loop continues with the others.
+- Training itself runs inside the per-job task container, not in this repo. ARD only needs the docker CLI (and, for the HPC backend, the `hpc-client`) plus TensorBoard to read results, so it installs nothing from the Isaac Lab / rl_games stack.
+- A failed candidate is recorded with its error and the loop continues with the others; nothing is auto-retried.

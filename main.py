@@ -5,13 +5,11 @@ Entry point for the ARD (Autonomous RL Designer) reward-refinement pipeline.
 Stage 2 — Automated reward refinement (Eureka-style):
   1. An LLM proposes complete `_get_rewards` methods for an ard-isaaclab-tasks env.
   2. Each candidate is spliced into a fresh copy of the task repo (AST injection)
-     and submitted as a job to the Parallel Coordination System (PCS) coordinator,
-     which trains it (PPO / rl_games) on a GPU worker.
+     and built + run as a local docker job (PPO / rl_games), one at a time.
   3. Finished jobs are scored by the task's fixed `fitness_function` metric; the
      best candidate's training summary is fed back to the LLM for the next round.
 
 Usage:
-    export TOKEN=pcs_...                 # coordinator bearer token
     export OPENROUTER_API_KEY=...            # LLM key
     python main.py --refine                       # uses configs/taskconfig.yaml
     python main.py --refine --task cartpole        # by dir name; or --task Isaac-ARD-Humanoid-v0
@@ -99,7 +97,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         tasks_repo=tasks_repo,
         env_file_rel=task_cfg["env_file"],
         task=task_cfg["task"],
-        coordinator=settings["coordinator"],
+        runner=settings["runner"],
         output_dir=output_dir,
         build_root=settings.get("build_root"),
     )
@@ -185,7 +183,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         eval_records = [
             history.new_record(
                 iteration=i, index=k, phase="eval", tag=f"iter{i}_eval_{k}",
-                seed=base_seed + k, model=agent.model, temperature=agent.temperature,
+                seed=base_seed + k + 1, model=agent.model, temperature=agent.temperature,
                 reward_method=best.reward_method, raw_response=best.raw_response,
                 status=STATUS_GENERATED,
             )
