@@ -27,7 +27,7 @@ import logging
 from typing import Dict, List, Optional
 
 from .local_runner import LocalRunner
-from .hpc_runner import HPCRunner, HPCRunnerError
+from .hpc_runner import HPCRunner, HPCRunnerError, HPCJob
 from .workspace_manager import WorkspaceManager
 from .reward_injection import RewardInjectionError
 from .result_processor import ResultProcessor
@@ -127,6 +127,14 @@ class RewardEvaluator:
                 "job_name_prefix", config.DEFAULT_HPC_JOB_NAME_PREFIX
             )
             self.hpc_extra_args = str(hpc.get("extra_args", "") or "")
+            # A job that ends without writing results back never judged its
+            # reward, so it is re-run rather than scored as a failure.
+            self.result_grace_seconds = float(
+                hpc.get("result_grace_seconds", config.DEFAULT_HPC_RESULT_GRACE_SECONDS)
+            )
+            self.max_retries = int(
+                hpc.get("max_retries", config.DEFAULT_HPC_MAX_RETRIES)
+            )
             health = "reachable" if self.runner.healthz() else "UNREACHABLE"
             logger.info(
                 f"RewardEvaluator ready: task={task} backend=hpc "
@@ -333,6 +341,7 @@ class RewardEvaluator:
 
         # --- Phase A: submit every candidate ---------------------------------
         handles: Dict[str, RewardRecord] = {}   # job_id -> record
+        jobs: Dict[str, HPCJob] = {}            # job_id -> handle (for resubmit)
         for record in records:
             if not record.has_method:
                 record.status = STATUS_GEN_FAILED
@@ -362,6 +371,7 @@ class RewardEvaluator:
             record.job_id = job.job_id
             record.status = STATUS_SUBMITTED
             handles[job.job_id] = record
+            jobs[job.job_id] = job
 
         if not handles:
             logger.error("No candidates were submitted to the HPC scheduler")
@@ -380,21 +390,32 @@ class RewardEvaluator:
                     continue
                 outstanding.discard(job_id)
                 record = handles[job_id]
+
+                # Recycle: copy the NAS artifacts into the job's work dir, then
+                # read them exactly as the local backend does. This runs before
+                # the status check on purpose — however the job ended, what
+                # matters is whether it wrote results back. A reward bad enough
+                # to fail training still does; a job the cluster killed never
+                # gets the chance, so an empty result means nothing was
+                # measured and it is re-run instead of scored.
+                work_dir = os.path.join(self.output_dir, record.tag)
+                if os.path.exists(work_dir):
+                    shutil.rmtree(work_dir, ignore_errors=True)
+                collected = self.runner.collect(
+                    job_id, work_dir, self.result_grace_seconds
+                )
+                if collected is None:
+                    retry = self._retry_no_results(record, jobs[job_id], status)
+                    if retry is not None:
+                        handles[retry.job_id] = record
+                        jobs[retry.job_id] = retry
+                        outstanding.add(retry.job_id)
+                    continue
+
                 if status != "completed":
                     logger.warning(f"[{record.tag}] job {job_id} {status}")
                     record.status = "failed"
                     record.eval_error = f"hpc job {status}"
-                    continue
-
-                # Recycle: copy the NAS artifacts into the job's work dir, then
-                # read them exactly as the local backend does.
-                work_dir = os.path.join(self.output_dir, record.tag)
-                if os.path.exists(work_dir):
-                    shutil.rmtree(work_dir, ignore_errors=True)
-                collected = self.runner.collect(job_id, work_dir)
-                if collected is None:
-                    record.status = STATUS_NO_METRICS
-                    record.eval_error = "completed but no NAS output"
                     continue
                 captured = self.processor.capture(work_dir)
                 if captured is None:
@@ -410,3 +431,36 @@ class RewardEvaluator:
                 time.sleep(self.poll_seconds)
 
         return records
+
+    def _retry_no_results(
+        self, record: RewardRecord, job: HPCJob, status: str
+    ) -> Optional[HPCJob]:
+        """Resubmit a job that came back empty; None once the budget is spent.
+
+        On None the record is marked failed with the attempt count, so the
+        history shows it was never measured rather than judged.
+        """
+        if job.attempt > self.max_retries:
+            logger.error(
+                f"[{record.tag}] {status} with no results after {job.attempt} "
+                f"attempt(s); giving up — this candidate goes UNMEASURED"
+            )
+            record.status = "failed"
+            record.eval_error = f"no results after {job.attempt} attempt(s)"
+            return None
+
+        logger.warning(
+            f"[{record.tag}] {status} with no results; "
+            f"retrying {job.attempt}/{self.max_retries}"
+        )
+        try:
+            new_job = self.runner.resubmit(job)
+        except HPCRunnerError as e:
+            logger.error(f"[{record.tag}] resubmit failed: {e}")
+            record.status = "failed"
+            record.eval_error = f"no results, resubmit failed: {e}"
+            return None
+
+        record.job_id = new_job.job_id
+        record.status = STATUS_SUBMITTED
+        return new_job
