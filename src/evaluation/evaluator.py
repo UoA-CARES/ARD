@@ -160,6 +160,48 @@ class RewardEvaluator:
         return self.workspace.get_env_source()
 
     # ---------------------------------------------------------------- evaluate
+    @staticmethod
+    def _checkpoint_epoch(checkpoint_path: str) -> Optional[int]:
+        """Read the epoch count rl_games saved inside a checkpoint.
+
+        rl_games checkpoints bundle their own epoch counter alongside the
+        weights (``a2c_common.py``: ``state['epoch'] = self.epoch_num`` on
+        save, ``self.epoch_num = weights['epoch']`` on load) — loading a
+        checkpoint resumes the epoch count, not just the network. Returns
+        None (rather than raising) if the file can't be read, e.g. torch
+        isn't installed in this process — callers fall back to the
+        configured budget as-is.
+        """
+        try:
+            import torch
+            state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            return int(state.get("epoch", 0))
+        except Exception as e:  # noqa: BLE001 - any read/unpickle failure
+            logger.warning(f"Could not read epoch count from {checkpoint_path}: {e}")
+            return None
+
+    def _effective_max_iterations(self, checkpoint_path: Optional[str]) -> Optional[str]:
+        """The ``--max_iterations`` value for one job, accounting for warm-start.
+
+        Without this, warm-starting from a checkpoint that already reached the
+        configured ``MAX_ITERATIONS`` immediately hits that same ceiling on
+        load (rl_games restores the checkpoint's own epoch count) and stops
+        after ~0 additional epochs. Extending the ceiling by the checkpoint's
+        inherited epoch count guarantees every candidate still gets the full
+        configured budget of *new* training on top of what it resumed from.
+        Returns None if no ``MAX_ITERATIONS`` is configured at all (the task's
+        own ``max_epochs`` default applies, unaffected by this).
+        """
+        configured = self.env_extra.get("MAX_ITERATIONS")
+        if configured is None:
+            return None
+        if not checkpoint_path:
+            return str(configured)
+        epoch = self._checkpoint_epoch(checkpoint_path)
+        if epoch is None:
+            return str(configured)
+        return str(epoch + int(configured))
+
     def _build_env(
         self, seed: Optional[int], checkpoint_path: Optional[str] = None
     ) -> Dict[str, str]:
@@ -181,6 +223,9 @@ class RewardEvaluator:
         if seed is not None:
             env["SEED"] = str(seed)
         env.update({k: str(v) for k, v in self.env_extra.items()})
+        max_iterations = self._effective_max_iterations(checkpoint_path)
+        if max_iterations is not None:
+            env["MAX_ITERATIONS"] = max_iterations
         if checkpoint_path:
             ckpt_flag = f"--checkpoint {config.IMAGE_REPO_ROOT}/{config.WARM_START_CHECKPOINT_REL}"
             env["EXTRA_ARGS"] = f"{env.get('EXTRA_ARGS', '')} {ckpt_flag}".strip()
@@ -215,8 +260,9 @@ class RewardEvaluator:
             flags += ["--seed", str(seed)]
         if checkpoint_path:
             flags += ["--checkpoint", f"{config.IMAGE_REPO_ROOT}/{config.WARM_START_CHECKPOINT_REL}"]
-        if self.env_extra.get("MAX_ITERATIONS") is not None:
-            flags += ["--max_iterations", str(self.env_extra["MAX_ITERATIONS"])]
+        max_iterations = self._effective_max_iterations(checkpoint_path)
+        if max_iterations is not None:
+            flags += ["--max_iterations", max_iterations]
         if self.env_extra.get("NUM_ENVS") is not None:
             flags += ["--num_envs", str(self.env_extra["NUM_ENVS"])]
 
