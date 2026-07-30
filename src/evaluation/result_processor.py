@@ -43,6 +43,7 @@ class CapturedArtifacts:
     log_path: str            # rl_games run directory (holds summaries/, params/, nn/)
     tb_path: str             # path to the TensorBoard event file
     summary_path: str        # path to the generated training_summary.txt
+    checkpoint_path: Optional[str] = None  # latest rl_games policy checkpoint (nn/*.pth)
 
 
 class ResultProcessor:
@@ -63,6 +64,28 @@ class ResultProcessor:
             reverse=True,
         )
         return candidates[0]
+
+    @staticmethod
+    def find_checkpoint(run_dir: str) -> Optional[str]:
+        """Find the checkpoint under ``run_dir/nn`` to warm-start from.
+
+        rl_games writes two kinds of file here: periodic ``last_<name>_ep_<N>_
+        rew_<R>.pth`` snapshots (including a final one when training ends), and
+        a single plain ``<name>.pth`` that it only overwrites when a *new* best
+        reward is reached (once training has run past ``save_best_after`` in the
+        task's ``rl_games_ppo_cfg.yaml``). Training reward isn't monotonic, so
+        the final periodic snapshot can score worse than an earlier peak — the
+        plain best-reward file is what warm-starting should resume from. A run
+        too short to ever clear ``save_best_after`` won't have one, so fall back
+        to the newest periodic snapshot in that case.
+        """
+        candidates = glob.glob(os.path.join(run_dir, "nn", "*.pth"))
+        if not candidates:
+            return None
+        best = [c for c in candidates if not os.path.basename(c).startswith("last_")]
+        if best:
+            return max(best, key=os.path.getmtime)
+        return max(candidates, key=os.path.getmtime)
 
     # --------------------------------------------------------------- capture
     def capture(self, work_dir: str) -> Optional[CapturedArtifacts]:
@@ -87,7 +110,8 @@ class ResultProcessor:
         self.summarize_tensorboard(tb_path, summary_path)
 
         captured = CapturedArtifacts(
-            log_path=run_dir, tb_path=tb_path, summary_path=summary_path
+            log_path=run_dir, tb_path=tb_path, summary_path=summary_path,
+            checkpoint_path=self.find_checkpoint(run_dir),
         )
         logger.info(f"Captured artifacts: {run_dir}")
         return captured

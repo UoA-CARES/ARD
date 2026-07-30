@@ -16,6 +16,7 @@ import tempfile
 from typing import Optional
 
 from .reward_injection import inject_reward, extract_method_source, RewardInjectionError
+from . import config
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +80,20 @@ class WorkspaceManager:
             return fh.read()
 
     # ------------------------------------------------------------------- build
-    def build_codebase(self, reward_method_src: str, tag: str) -> str:
+    def build_codebase(
+        self, reward_method_src: str, tag: str, checkpoint_path: Optional[str] = None
+    ) -> str:
         """
         Stage a fresh repo copy with ``reward_method_src`` injected and pack it.
 
         Args:
             reward_method_src: LLM-proposed ``_get_rewards`` method source.
             tag: Unique label for this candidate (used in dir/tarball names).
+            checkpoint_path: Warm-start checkpoint to bake into the image, at
+                ``config.WARM_START_CHECKPOINT_REL``. Baking it into the same
+                tarball used as the docker build context (rather than a runtime
+                mount) delivers it identically to both the local and HPC
+                backends, exactly like the injected reward code.
 
         Returns:
             Absolute path to the produced ``.tar.gz`` codebase.
@@ -107,6 +115,12 @@ class WorkspaceManager:
         with open(env_abs, "w") as fh:
             fh.write(injected)
         logger.debug(f"Injected reward into {env_abs}")
+
+        if checkpoint_path:
+            ckpt_abs = os.path.join(stage, config.WARM_START_CHECKPOINT_REL)
+            os.makedirs(os.path.dirname(ckpt_abs), exist_ok=True)
+            shutil.copyfile(checkpoint_path, ckpt_abs)
+            logger.info(f"Baked warm-start checkpoint {checkpoint_path} -> {ckpt_abs}")
 
         tarball = os.path.join(self.build_root, f"codebase_{tag}.tar.gz")
         with tarfile.open(tarball, "w:gz") as tar:

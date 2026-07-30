@@ -37,6 +37,24 @@ TRAINING_RECORD_DIR = "training_record"
 TRAINING_SUMMARY_FILE = "training_summary.txt"
 
 # --------------------------------------------------------------------------- #
+# Warm-start checkpoint delivery                                              #
+# --------------------------------------------------------------------------- #
+# A warm-start checkpoint is baked into the candidate's job codebase tarball
+# (the same tarball WorkspaceManager already builds as the docker build
+# context for both backends), at this path relative to the repo root, under a
+# fixed filename so the in-image path never depends on the source checkpoint's
+# original name. Must live under `scripts/` (or `source/`) — the Dockerfile
+# only `COPY`s those two directories into the image, not the whole build
+# context, so anything staged outside them (e.g. a top-level `warm_start/`)
+# silently never reaches the running container.
+WARM_START_CHECKPOINT_REL = "scripts/warm_start/checkpoint.pth"
+
+# Where the tarball's contents land inside the built image (Dockerfile COPYs
+# the build context here). Matches HPC_ENTRYPOINT below, which both backends'
+# images share since they're built from the same tarball.
+IMAGE_REPO_ROOT = "/opt/ard-isaaclab-tasks"
+
+# --------------------------------------------------------------------------- #
 # HPC backend (CARES HPC Scheduler)                                            #
 # --------------------------------------------------------------------------- #
 # Which execution backend the evaluator drives. "local" builds + `docker run`s

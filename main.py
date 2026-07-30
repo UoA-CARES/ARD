@@ -114,6 +114,11 @@ def run_refinement(settings, task_cfg, refine_cfg):
     num_eval = int(refine_cfg.get("num_eval", 1))
     base_seed = int(refine_cfg.get("base_seed", 0))
     max_workers = min(agent.samples, int(refine_cfg.get("max_workers", agent.samples)))
+    warm_start = bool(refine_cfg.get("warm_start", True))
+
+    # Checkpoint of the previous iteration's best candidate; None means cold
+    # start (always true for iteration 1, since there is no previous best yet).
+    warm_start_checkpoint = None
 
     # The single source of truth: every candidate's generation -> evaluation ->
     # judgement -> feedback lifecycle is recorded here, and it is thread-safe so
@@ -162,7 +167,12 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         # --- Run phase: dispatch + capture (evaluator), then judge (scorer) --
         logger.info(f"Evaluating {sum(r.has_method for r in run_records)} candidate(s)")
-        evaluator.evaluate(run_records)
+        if warm_start and warm_start_checkpoint:
+            logger.info(f"Warm-starting from {warm_start_checkpoint}")
+        evaluator.evaluate(
+            run_records,
+            checkpoint_path=warm_start_checkpoint if warm_start else None,
+        )
         scorer.score_all(run_records)
         best = scorer.select_best(run_records)
 
@@ -189,13 +199,21 @@ def run_refinement(settings, task_cfg, refine_cfg):
             )
             for k in range(num_eval)
         ]
-        evaluator.evaluate(eval_records)
+        evaluator.evaluate(
+            eval_records,
+            checkpoint_path=warm_start_checkpoint if warm_start else None,
+        )
         scorer.score_all(eval_records)
         best_eval = scorer.select_best(eval_records)
 
-        summary_path = (best_eval or best).summary_path
+        winner = best_eval or best
+        summary_path = winner.summary_path
         if best_eval:
             logger.info(f"Eval fitness (best of {num_eval}): {best_eval.fitness:.4f}")
+
+        # Carry this iteration's winning checkpoint into the next iteration.
+        if warm_start and winner.checkpoint_path:
+            warm_start_checkpoint = winner.checkpoint_path
 
         # --- Feedback phase: fold the outcome back into the conversation -----
         # Today only the winner is fed back; because the history retains every
@@ -222,6 +240,11 @@ def main():
                         help="Path to task configuration YAML (used if --task is omitted)")
     parser.add_argument("--refineconfig", type=str, default="configs/refineconfig.yaml",
                         help="Path to refinement configuration YAML")
+    parser.add_argument("--warm-start", dest="warm_start",
+                        action=argparse.BooleanOptionalAction, default=None,
+                        help="Resume each iteration from the previous iteration's best "
+                             "checkpoint (default: true, or refineconfig.yaml's warm_start). "
+                             "Pass --no-warm-start to force cold starts.")
     args = parser.parse_args()
 
     settings = load_yaml_config(args.settings)
@@ -233,6 +256,8 @@ def main():
 
     if args.refine:
         refine_cfg = load_yaml_config(args.refineconfig)
+        if args.warm_start is not None:
+            refine_cfg["warm_start"] = args.warm_start
         run_refinement(settings, task_cfg, refine_cfg)
     else:
         parser.print_help()
