@@ -40,7 +40,7 @@ import shutil
 import logging
 import subprocess
 from typing import Any, Dict, List, Optional, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import config
 
@@ -79,6 +79,10 @@ class HPCJob:
     image: str          # full registry ref pushed + pulled by the job
     job_name: str       # name shown in `hpc-client jobs`
     status: str = "submitted"
+    # The accepted payload, kept so resubmit() can re-run this candidate without
+    # rebuilding or re-pushing its image, and which attempt this handle is.
+    spec: Dict[str, Any] = field(default_factory=dict)
+    attempt: int = 1
 
 
 def job_id_of(response: Any) -> str:
@@ -292,7 +296,32 @@ class HPCRunner:
         job_id = job_id_of(response)
         self._active_jobs.add(job_id)
         logger.info(f"[{tag}] submitted {job_name}: {job_id}")
-        return HPCJob(job_id=job_id, tag=tag, image=image, job_name=job_name)
+        return HPCJob(job_id=job_id, tag=tag, image=image, job_name=job_name,
+                      spec=spec)
+
+    # ---------------------------------------------------------------- resubmit
+    def resubmit(self, job: HPCJob) -> HPCJob:
+        """
+        Re-run a candidate whose previous attempt returned no results.
+
+        Skips build+push: ``job.spec`` names an image already in the registry
+        under this candidate's tag and its contents have not changed, so a retry
+        costs cluster time only. Returns a new handle with the new ``job_id``.
+        """
+        try:
+            response = self.client.submit(job.spec)
+        except HPCAuthenticationError:
+            self._relogin(self.client)
+            response = self.client.submit(job.spec)
+        except HPCClientError as e:
+            raise HPCRunnerError(f"resubmit failed for {job.job_name}: {e}")
+
+        job_id = job_id_of(response)
+        self._active_jobs.add(job_id)
+        logger.info(f"[{job.tag}] resubmitted as {job_id} reusing {job.image}")
+        return HPCJob(job_id=job_id, tag=job.tag, image=job.image,
+                      job_name=job.job_name, spec=job.spec,
+                      attempt=job.attempt + 1)
 
     # -------------------------------------------------------------------- poll
     def poll(self, job_id: str) -> str:
@@ -343,25 +372,31 @@ class HPCRunner:
         self._active_jobs.clear()
 
     # ----------------------------------------------------------------- collect
-    def collect(self, job_id: str, dest_dir: str) -> Optional[str]:
+    def collect(
+        self,
+        job_id: str,
+        dest_dir: str,
+        grace_seconds: float = config.DEFAULT_HPC_RESULT_GRACE_SECONDS,
+    ) -> Optional[str]:
         """
         Copy a finished job's NAS artifacts (``<nas_outputs>/<job_id>``) into ``dest_dir``.
 
         Returns ``dest_dir`` on success, or ``None`` if the NAS folder never
-        appeared (e.g. the job died before the scheduler preserved any output).
+        appeared (e.g. the job died before the scheduler preserved any output) —
+        which the evaluator treats as "nothing was measured" and retries.
         The copied tree keeps the scheduler's layout (``logs/rl_games/…`` +
         ``outputs/``), which :class:`ResultProcessor` reads unchanged.
         """
         src = os.path.join(self.nas_outputs, job_id)
-        # The scheduler's NAS copy can lag a terminal status slightly; give it a
-        # few seconds to appear before giving up.
-        for _ in range(6):
-            if os.path.isdir(src):
-                break
-            time.sleep(5)
-        else:
-            logger.error(f"[{job_id}] no NAS output at {src}")
-            return None
+        # The scheduler's NAS copy can lag a terminal status slightly; give it
+        # until the grace window to appear before giving up.
+        waited = 0.0
+        while not os.path.isdir(src):
+            if waited >= grace_seconds:
+                logger.error(f"[{job_id}] no NAS output at {src} after {waited:.0f}s")
+                return None
+            time.sleep(min(5, grace_seconds - waited))
+            waited += min(5, grace_seconds - waited)
 
         os.makedirs(dest_dir, exist_ok=True)
         logger.info(f"[{job_id}] recycling artifacts {src} -> {dest_dir}")

@@ -75,3 +75,15 @@ DEFAULT_HPC_MAX_ACTIVE_JOBS = 50
 # Prefix for submitted job names (the scheduler appends a timestamp + short hash
 # to form the unique job_id / NAS folder name), e.g. ard_iter1_run_0.
 DEFAULT_HPC_JOB_NAME_PREFIX = "ard"
+
+# How long a terminated job has to produce its NAS output before ARD gives up on
+# it. A reward bad enough to fail training still gets its results written back
+# (the container ran, so the scheduler preserved /workspace/output), whereas a
+# technical crash — driver fault, node power-off, cancellation — dies before
+# anything is saved. So an empty result means nothing was measured, and the job
+# is re-run rather than scored. Must exceed the scheduler's NAS-copy lag.
+DEFAULT_HPC_RESULT_GRACE_SECONDS = 60
+
+# How many times such a job may be resubmitted before ARD gives up (0 disables).
+# A retry reuses the image already pushed for that candidate — cluster time only.
+DEFAULT_HPC_MAX_RETRIES = 2
