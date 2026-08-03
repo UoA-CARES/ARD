@@ -99,7 +99,7 @@ class FitnessScorer:
         return best
 
     @staticmethod
-    def summarize(records: List) -> Tuple[List[float], float, float]:
+    def summarise(records: List) -> Tuple[List[float], float, float]:
         """
         Return ``(values, mean, std)`` over ``records`` — one reward's eval seeds.
 
@@ -112,6 +112,6 @@ class FitnessScorer:
         """
         values = [r.fitness for r in records if isfinite(r.fitness)]
         if not values:
-            logger.warning("No scored records to summarize")
+            logger.warning("No scored records to summarise")
             return [], float("-inf"), 0.0
         return values, fmean(values), stdev(values) if len(values) > 1 else 0.0

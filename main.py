@@ -224,7 +224,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
     ]
     evaluator.evaluate(eval_records)
     scorer.score_all(eval_records)
-    values, mean, std = scorer.summarize(eval_records)
+    values, mean, std = scorer.summarise(eval_records)
     logger.info(
         f"Eval fitness over {len(values)}/{num_eval} seed(s): "
         f"mean={mean:.4f} std={std:.4f} "
