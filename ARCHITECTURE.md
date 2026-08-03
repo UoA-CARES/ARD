@@ -86,8 +86,20 @@ ResultProcessor.capture  ──►  read <output_dir>/<tag>/logs + scalar summar
         │
 FitnessScorer.score_all / select_best  ──►  read fitness_function, pick the batch winner
         │
-EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run phase, then eval phase)
+EurekaAgent.receive_feedback  ──►  fold that same run's summary back in (code and numbers from one run)
 ```
+
+## Eval phase — once per run, after the loop
+
+The loop only explores: one training per candidate, and the winner's own summary
+feeds the next round. Scoring happens once, after the last iteration.
+`FitnessScorer.select_best` over **every** iteration's run records picks the
+run-wide winner (the one record left with `selected_best` in
+`reward_history.json`); it is re-trained on `num_eval` seeds and reported as
+**mean ± std** over them, since a max over seeds would report the luckiest seed's
+best moment (per-seed fitness is already a max over training events). Each seed
+stays in the history as its own record. Cost per task is
+`iteration * sample + num_eval` trainings.
 
 ## Module map (`src/`)
 
@@ -96,7 +108,7 @@ EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run 
 - `evaluation/reward_injection.py` — AST splice of `_get_rewards` (+ fitness preservation).
 - `evaluation/workspace_manager.py` — builds per-candidate job codebases.
 - `evaluation/result_processor.py` — reads the job's logs in place, writes the scalar summary.
-- `evaluation/scorer.py` — `FitnessScorer`: reads `fitness_function`, ranks candidates.
+- `evaluation/scorer.py` — `FitnessScorer`: reads `fitness_function`, ranks candidates, summarises eval seeds.
 - `evaluation/evaluator.py` — `RewardEvaluator`, the dispatch + capture orchestrator.
 - `refinement/llm_agent.py` — `EurekaAgent` (proposes `_get_rewards`, folds in feedback).
 - `refinement/agent_config/*.txt` — LLM prompt templates.

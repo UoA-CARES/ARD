@@ -11,7 +11,9 @@ all metric reading and ranking lives here so the scoring policy can change
 
 import os
 import logging
-from typing import List, Optional
+from math import isfinite
+from statistics import fmean, stdev
+from typing import List, Optional, Tuple
 
 from .result_processor import load_accumulator
 from . import config
@@ -85,8 +87,6 @@ class FitnessScorer:
         and scored). Returns None if none qualify. Sets ``selected_best`` on the
         winner and clears it on the rest of the batch.
         """
-        from math import isfinite
-
         scored = [r for r in records if isfinite(r.fitness)]
         for r in records:
             r.selected_best = False
@@ -97,3 +97,21 @@ class FitnessScorer:
         best.selected_best = True
         logger.info(f"Best candidate: {best}")
         return best
+
+    @staticmethod
+    def summarize(records: List) -> Tuple[List[float], float, float]:
+        """
+        Return ``(values, mean, std)`` over ``records`` — one reward's eval seeds.
+
+        The mean is the score to report: a max over seeds would give the best
+        moment of the luckiest seed (each seed's fitness is already a max over
+        training events) and discard the variance the seeds were trained to
+        measure. Unscored records are left out rather than counted as -inf, so
+        ``len(values)`` says how many seeds actually ran. ``std`` is the sample
+        std (0.0 for a single seed).
+        """
+        values = [r.fitness for r in records if isfinite(r.fitness)]
+        if not values:
+            logger.warning("No scored records to summarize")
+            return [], float("-inf"), 0.0
+        return values, fmean(values), stdev(values) if len(values) > 1 else 0.0
