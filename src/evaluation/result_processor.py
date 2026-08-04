@@ -84,7 +84,7 @@ class ResultProcessor:
         record_dir = os.path.join(run_dir, config.TRAINING_RECORD_DIR)
         os.makedirs(record_dir, exist_ok=True)
         summary_path = os.path.join(record_dir, config.TRAINING_SUMMARY_FILE)
-        self.summarize_tensorboard(tb_path, summary_path)
+        self.summarise_tensorboard(tb_path, summary_path)
 
         captured = CapturedArtifacts(
             log_path=run_dir, tb_path=tb_path, summary_path=summary_path
@@ -93,7 +93,7 @@ class ResultProcessor:
         return captured
 
     # ------------------------------------------------------------- TB summary
-    def summarize_tensorboard(self, event_file_path: str, output_txt_path: str):
+    def summarise_tensorboard(self, event_file_path: str, output_txt_path: str):
         """Write a human-readable summary of all scalar metrics for LLM feedback."""
         try:
             acc = load_accumulator(event_file_path)
