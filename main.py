@@ -7,7 +7,9 @@ Stage 2 — Automated reward refinement (Eureka-style):
   2. Each candidate is spliced into a fresh copy of the task repo (AST injection)
      and built + run as a local docker job (PPO / rl_games), one at a time.
   3. Finished jobs are scored by the task's fixed `fitness_function` metric; the
-     best candidate's training summary is fed back to the LLM for the next round.
+     best candidate is re-trained `num_eval` times to de-noise its score, its
+     checkpoint carried into the next iteration (warm-starting), and its
+     training summary fed back to the LLM for the next round.
 
 Usage:
     export OPENROUTER_API_KEY=...            # LLM key

@@ -37,7 +37,9 @@ One refinement iteration:
 2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks` via AST and packed into a `.tar.gz` codebase.
 3. **Run.** Each codebase (with its `Dockerfile`) is trained according to `runner.backend`: the local backend builds and `docker run`s each candidate in turn; the HPC backend builds, pushes, and submits the whole batch to the CARES scheduler and trains it concurrently. Either way the task is selected via the job's config (`TASK`, plus `SEED` for eval runs).
 4. **Score.** Each finished job's `logs/` are read from its work dir; each is scored by its `fitness_function` (from the training TensorBoard logs).
-5. **Re-evaluate & feed back.** The best candidate is retrained `num_eval` times, and its training summary is fed back to the LLM to inform the next iteration.
+5. **Re-evaluate & feed back.** The iteration's best candidate is retrained `num_eval` times to de-noise its score; its training summary is fed back to the LLM to inform the next iteration, and (with `warm_start` on) its checkpoint is carried into the next iteration instead of starting from random weights.
+
+This repeats every iteration, not just once at the end — each iteration both scores a winner and hands its checkpoint forward. Total trainings per task = `iteration * (sample + num_eval)`.
 
 The evaluation metric is **isolated in the task layer**: it lives in each task's `_get_dones`, not `_get_rewards`, so the LLM can rewrite the reward freely without ever altering the scoreboard it is judged on. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the injection mechanism and design rationale.
 

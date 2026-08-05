@@ -86,8 +86,31 @@ ResultProcessor.capture  ──►  read <output_dir>/<tag>/logs + scalar summar
         │
 FitnessScorer.score_all / select_best  ──►  read fitness_function, pick the batch winner
         │
-EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run phase, then eval phase)
+EurekaAgent.receive_feedback  ──►  fold that same run's summary back in (code and numbers from one run)
 ```
+
+## Eval phase & warm-starting — once per iteration
+
+Each iteration's run-phase winner (`FitnessScorer.select_best` over that
+iteration's `sample` candidates) is re-trained `num_eval` times, on different
+seeds, before anything is committed to feedback or warm-starting — a single
+run's fitness is seed-noisy, so this de-noises it. `select_best` over those
+eval records picks the iteration's actual winner (`best_eval`, falling back to
+the run-phase `best` if every eval retrain failed to score); each seed stays in
+the history as its own record. Cost per task is `iteration * (sample + num_eval)`
+trainings.
+
+That winner's checkpoint (`RewardRecord.checkpoint_path`, set by
+`RewardEvaluator` after each successful run — see `find_checkpoint` in
+`result_processor.py`) is then carried into the *next* iteration as
+`warm_start_checkpoint`, when `warm_start` is enabled: every candidate in the
+next iteration's run and eval phases resumes training from it instead of
+random weights (baked into that candidate's build tarball, delivered via
+`--checkpoint`; see `evaluator.py`'s `_build_env`/`_build_hpc_command` and
+`_effective_max_iterations`, which extends the configured epoch budget by the
+checkpoint's own inherited epoch count). Iteration 1 always cold-starts, since
+no previous winner exists yet; `warm_start_checkpoint` also only lives for one
+continuous `--refine` invocation, not across separate runs.
 
 ## Module map (`src/`)
 
@@ -96,7 +119,7 @@ EurekaAgent.receive_feedback  ──►  fold the winner's summary back in (run 
 - `evaluation/reward_injection.py` — AST splice of `_get_rewards` (+ fitness preservation).
 - `evaluation/workspace_manager.py` — builds per-candidate job codebases.
 - `evaluation/result_processor.py` — reads the job's logs in place, writes the scalar summary.
-- `evaluation/scorer.py` — `FitnessScorer`: reads `fitness_function`, ranks candidates.
+- `evaluation/scorer.py` — `FitnessScorer`: reads `fitness_function`, ranks candidates, summarises eval seeds.
 - `evaluation/evaluator.py` — `RewardEvaluator`, the dispatch + capture orchestrator.
 - `refinement/llm_agent.py` — `EurekaAgent` (proposes `_get_rewards`, folds in feedback).
 - `refinement/agent_config/*.txt` — LLM prompt templates.
