@@ -34,10 +34,11 @@ For each candidate, ARD builds that repo's `Dockerfile`, then either `docker run
 One refinement iteration:
 
 1. **Generate.** The LLM proposes `sample` candidate `_get_rewards(self)` methods.
-2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks` via AST and packed into a `.tar.gz` codebase.
+2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks` via AST and packed into a `.tar.gz` codebase. With `warm_start` on and a previous iteration's winner already known, that winner's checkpoint is baked into the same tarball (see step 6), so every candidate this iteration resumes from it instead of random weights.
 3. **Run.** Each codebase (with its `Dockerfile`) is trained according to `runner.backend`: the local backend builds and `docker run`s each candidate in turn; the HPC backend builds, pushes, and submits the whole batch to the CARES scheduler and trains it concurrently. Either way the task is selected via the job's config (`TASK`, plus `SEED` for eval runs).
 4. **Score.** Each finished job's `logs/` are read from its work dir; each is scored by its `fitness_function` (from the training TensorBoard logs).
-5. **Re-evaluate & feed back.** The iteration's best candidate is retrained `num_eval` times to de-noise its score; its training summary is fed back to the LLM to inform the next iteration, and (with `warm_start` on) its checkpoint is carried into the next iteration instead of starting from random weights.
+5. **Re-evaluate & feed back.** The iteration's best candidate is retrained `num_eval` times to de-noise its score, and its training summary is fed back to the LLM to inform the next iteration.
+6. **Warm-start.** With `warm_start` enabled (`refineconfig.yaml`'s `warm_start: true`, or pass `--warm-start` — off by default), the de-noised winner's checkpoint is carried forward as the next iteration's starting point — read back in at step 2 above. Iteration 1 always cold-starts, since no previous winner exists yet.
 
 This repeats every iteration, not just once at the end — each iteration both scores a winner and hands its checkpoint forward. Total trainings per task = `iteration * (sample + num_eval)`.
 
@@ -83,7 +84,7 @@ Three YAML files under `configs/`:
 |---|---|
 | `settings.yaml` | `tasks_repo`, `output_dir`, `build_root`, and the `runner` block (see below). |
 | `taskconfig.yaml` | The task: `task` (e.g. `Isaac-ARD-Cartpole-v0`), `env_file` (the env whose `_get_rewards` is rewritten), `description` (the LLM's brief), `max_iterations`. |
-| `refineconfig.yaml` | The loop: `iteration`, `num_eval`, `base_seed`, and the `agent` block (`model`, `base_url`, `sample`, `temperature`). |
+| `refineconfig.yaml` | The loop: `iteration`, `num_eval`, `base_seed`, `warm_start` (default `false` — resume each iteration from the previous iteration's de-noised winner instead of random weights, when enabled; see [How the loop works](#how-the-loop-works)), and the `agent` block (`model`, `base_url`, `sample`, `temperature`). |
 
 `runner.backend` in `settings.yaml` picks how candidates train:
 
@@ -122,6 +123,8 @@ python main.py --refine --task cartpole
 python main.py --refine --settings configs/settings.yaml \
                --taskconfig configs/taskconfig.yaml \
                --refineconfig configs/refineconfig.yaml
+# enable warm-starting (off by default), overriding refineconfig.yaml's warm_start:
+python main.py --refine --task cartpole --warm-start
 ```
 
 To refine a different task, either point `taskconfig.yaml` at it (`task` + `env_file`) or pass `--task` with the directory name or the registered task ID:

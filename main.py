@@ -116,7 +116,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
     num_eval = int(refine_cfg.get("num_eval", 1))
     base_seed = int(refine_cfg.get("base_seed", 0))
     max_workers = min(agent.samples, int(refine_cfg.get("max_workers", agent.samples)))
-    warm_start = bool(refine_cfg.get("warm_start", True))
+    warm_start = bool(refine_cfg.get("warm_start", False))
 
     # Checkpoint of the previous iteration's best candidate; None means cold
     # start (always true for iteration 1, since there is no previous best yet).
@@ -242,11 +242,10 @@ def main():
                         help="Path to task configuration YAML (used if --task is omitted)")
     parser.add_argument("--refineconfig", type=str, default="configs/refineconfig.yaml",
                         help="Path to refinement configuration YAML")
-    parser.add_argument("--warm-start", dest="warm_start",
-                        action=argparse.BooleanOptionalAction, default=None,
-                        help="Resume each iteration from the previous iteration's best "
-                             "checkpoint (default: true, or refineconfig.yaml's warm_start). "
-                             "Pass --no-warm-start to force cold starts.")
+    parser.add_argument("--warm-start", action="store_true",
+                        help="Resume each iteration from the previous iteration's "
+                             "de-noised winner instead of random weights (default: "
+                             "false, or refineconfig.yaml's warm_start).")
     args = parser.parse_args()
 
     settings = load_yaml_config(args.settings)
@@ -258,8 +257,8 @@ def main():
 
     if args.refine:
         refine_cfg = load_yaml_config(args.refineconfig)
-        if args.warm_start is not None:
-            refine_cfg["warm_start"] = args.warm_start
+        if args.warm_start:
+            refine_cfg["warm_start"] = True
         run_refinement(settings, task_cfg, refine_cfg)
     else:
         parser.print_help()
