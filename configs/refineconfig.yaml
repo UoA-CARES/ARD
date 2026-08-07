@@ -1,7 +1,7 @@
 # Eureka refinement parameters
 # Trainings per task = iteration * agent.sample + num_eval
-iteration: 5    # how many refinement iterations to run
-num_eval: 5     # seeds the run's best reward is re-trained on, once, after the loop
+iteration: 2    # how many refinement iterations to run
+num_eval: 2     # seeds the run's best reward is re-trained on, once, after the loop
 base_seed: 42   # eval-phase seeds are base_seed + k + 1 (passed to each job as env SEED -> train.py --seed)
 max_workers: 48
 
@@ -12,7 +12,7 @@ agent:
 # anthropic/claude-sonnet-4.5
   model: "qwen/qwen3-coder-30b-a3b-instruct"   #  "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
   base_url: "https://openrouter.ai/api/v1"
-  sample: 16        # reward candidates generated per iteration (the run phase)
+  sample: 2        # reward candidates generated per iteration (the run phase)
   temperature: 1.0  # LLM sampling temperature (raised for exploration variety)
   top_p: 0.95       # nucleus sampling; <1.0 widens the candidate distribution
   # Each candidate also gets a distinct sampler seed to diversify the batch beyond
