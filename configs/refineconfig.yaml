@@ -17,3 +17,22 @@ agent:
   top_p: 0.95       # nucleus sampling; <1.0 widens the candidate distribution
   # Each candidate also gets a distinct sampler seed to diversify the batch beyond
   # what temperature/top_p alone provide.
+
+# VLM Critic agent settings
+vlm:
+# qwen/qwen3-coder-30b-a3b-instruct
+  model: "qwen/qwen3-vl-30b-a3b-instruct"   #  "qwen 2.5" # "cosmos-reason1 7b" # "gemini er 2.0"
+  base_url: "https://openrouter.ai/api/v1"
+  temperature: 0.3        # keep it low for critical evaluation, but not zero to avoid deterministic behavior
+  max_output_tokens: 600  # limit output length
+  timeout_seconds: 90        # video clips are short so dont need too long
+
+  prompt_file: "src/vlm/vlm_critic.txt"  # path to the prompt file for the VLM Critic agent
+
+  logging:
+    jsonl_enabled: true
+    #jsonl_path_template: "./runs/{task_name}/{eval_id}/logs/rl_games/{robot_name}/{date_time}/training_record/vlm_feedback_{view_name}.jsonl"
+    jsonl_path: "./runs/vlm_test_outputs/{video_name}.jsonl"
+    save_raw_response: true
+
+
