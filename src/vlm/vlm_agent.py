@@ -40,6 +40,8 @@ class VLMFeedbackAgent:
             logger.warning("OPENROUTER_API_KEY is not set; LLM calls will fail.")
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
+        self.raw_response = None  # Store the raw response for debugging
+
         self.sys_message = self._init_sys_message()
 
     def _init_sys_message(self):
@@ -64,9 +66,9 @@ class VLMFeedbackAgent:
         """
         Critiques a sequence of images and returns a natural language feedback.
         """
-
+        sequence_note = {"type": "text", "text": "The following frames are sequential frames from a video clip, in chronological order."}
         image_content = self._build_image_content(frame_paths)
-        messages = self._build_messages(image_content)
+        messages = self._build_messages([sequence_note] + image_content)
         return self._call_vlm(messages)
 
     def _build_video_content(self, video_path: str) -> dict:
@@ -104,6 +106,7 @@ class VLMFeedbackAgent:
         """
         content = [{"type": "text", 
                     "text": f"Critique this task: {self.task_description}"}] + content_items
+
         return self.sys_message + [{"role": "user", "content": content}]
 
 
@@ -124,6 +127,9 @@ class VLMFeedbackAgent:
                 )
                 feedback = response.choices[0].message.content
                 if feedback is not None:
+                    logger.info(f"VLM feedback received")
+                    logger.info(f"Storing raw response to attribute 'raw_response' for debugging.")
+                    self.raw_response = response
                     return feedback
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed: {e}")

@@ -1,0 +1,4 @@
+  Use the Shadow Hand's fingers to rotate a cube held in the palm until its
+  orientation matches a target orientation, from state observations. Reach the
+  goal pose without dropping the cube, then keep reaching freshly sampled target
+  orientations, achieving as many consecutive successes as possible.
