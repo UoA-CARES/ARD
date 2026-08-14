@@ -32,7 +32,6 @@ vlm:
   logging:
     jsonl_enabled: true
     #jsonl_path_template: "./runs/{task_name}/{eval_id}/logs/rl_games/{robot_name}/{date_time}/training_record/vlm_feedback_{view_name}.jsonl"
-    jsonl_path: "./runs/vlm_test_outputs/{video_name}.jsonl"
-    save_raw_response: true
+    save_raw_response: true  # Save the raw response from the VLM Critic agent for debugging
 
 
