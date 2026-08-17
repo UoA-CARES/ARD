@@ -145,6 +145,12 @@ def main():
         action="store_true",
         help="If set, the video will be sliced into frames and critiqued as images.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for testing variance in response."
+    )
     args = parser.parse_args()
 
     # Load configuration
@@ -166,6 +172,10 @@ def main():
         logger.error(f"Task description file not found: {task_path}")
         raise
 
+    if not os.path.isfile(args.video_path):
+        logger.error(f"Video file not found: {args.video_path}")
+        raise FileNotFoundError(f"Video file not found: {args.video_path}")
+
     # Get the date-time of the video
     grandparent_path = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(args.video_path)))
@@ -182,6 +192,7 @@ def main():
         SAMPLE_FPS = 4                      # fps of Nvidia Cosmos Reason-1
         image_output_dir = f"{grandparent_name}__{os.path.basename(args.video_path)}_output_frames"
         image_list = slice_video_into_frames(args.video_path, image_output_dir, SAMPLE_FPS)
+        logger.info("Slicing complete. Number of frames saved: {}".format(len(image_list)))
         # Critique the sliced frames
         vlm_agent = VLMFeedbackAgent(task_description, sys_cfg)
         feedback = vlm_agent.critique_images(image_list)
@@ -189,20 +200,20 @@ def main():
     # Save feedback to JSONL file
     jsonl_record = {
         "video_name": os.path.basename(args.video_path),
-        "model:": sys_cfg.get("model"),
+        "model": sys_cfg.get("model"),
         "task_description": task_description,
         "date_time": grandparent_name,  
+        "seed": args.seed,
         "vlm_feedback": feedback,
         "human_feedback": None,  # Placeholder for human feedback
     }
-    if sys_cfg.get("save_raw_response", False) and hasattr(vlm_agent, "raw_response"):          # TO FIX
-        jsonl_record["raw_response"] = vlm_agent.raw_response
     if sys_cfg.get("jsonl_enabled", True):
         jsonl_path = os.path.join(SRC_ROOT, "..", "runs", "vlm_test_outputs", f"{grandparent_name}_{os.path.basename(args.video_path)}.jsonl")
         os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
         with open(jsonl_path, "a", encoding="utf-8") as f:
             json.dump(jsonl_record, f, indent=1)
-            # f.write("\n")
+            f.write("\n\n")  # Ensure each record is on a new line
+        logger.info(f"Feedback saved to JSONL file: {jsonl_path}")
     else:
         logger.info("JSONL logging is disabled; feedback not saved to file.")
 

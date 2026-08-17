@@ -54,22 +54,24 @@ class VLMFeedbackAgent:
 
         return [{"role": "system", "content": system_prompt}]
 
-    def critique_video(self, video_path: str) -> str:
+    def critique_video(self, video_path: str, seed: int = None) -> str:
         """
         Critiques a video and returns a natural language feedback.
         """
         video_content = self._build_video_content(video_path)
         messages = self._build_messages([video_content])
-        return self._call_vlm(messages)
+        logging.info("Video Critique requested. ")
+        return self._call_vlm(messages, seed=seed)
 
-    def critique_images(self, frame_paths: list[str]) -> str:
+    def critique_images(self, frame_paths: list[str], seed: int = None) -> str:
         """
         Critiques a sequence of images and returns a natural language feedback.
         """
         sequence_note = {"type": "text", "text": "The following frames are sequential frames from a video clip, in chronological order."}
         image_content = self._build_image_content(frame_paths)
         messages = self._build_messages([sequence_note] + image_content)
-        return self._call_vlm(messages)
+        logging.info("Image Critique requested. ")
+        return self._call_vlm(messages, seed=seed)
 
     def _build_video_content(self, video_path: str) -> dict:
         """
@@ -110,7 +112,7 @@ class VLMFeedbackAgent:
         return self.sys_message + [{"role": "user", "content": content}]
 
 
-    def _call_vlm(self, messages: list[dict]) -> str:
+    def _call_vlm(self, messages: list[dict], seed: int = None) -> str:
         """
         VLM API call
         """
@@ -124,12 +126,13 @@ class VLMFeedbackAgent:
                     temperature=self.temperature,
                     max_tokens=self.max_output_tokens,
                     timeout=self.timeout_seconds,
+                    seed=seed
                 )
                 feedback = response.choices[0].message.content
                 if feedback is not None:
                     logger.info(f"VLM feedback received")
                     logger.info(f"Storing raw response to attribute 'raw_response' for debugging.")
-                    self.raw_response = response
+                        
                     return feedback
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed: {e}")
