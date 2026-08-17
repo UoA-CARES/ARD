@@ -32,6 +32,6 @@ vlm:
   logging:
     jsonl_enabled: true
     #jsonl_path_template: "./runs/{task_name}/{eval_id}/logs/rl_games/{robot_name}/{date_time}/training_record/vlm_feedback_{view_name}.jsonl"
-    save_raw_response: true  # Save the raw response from the VLM Critic agent for debugging
+    #debug_tokens: true  # log the token cost and if a response was truncated
 
 
