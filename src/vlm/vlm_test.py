@@ -23,6 +23,11 @@ import cv2
 from pathlib import Path
 import json
 
+##### Image Parameters #####
+FRAME_CAP = 45 # Maximum number of frames to extract
+SAMPLE_FPS = 4 # fps of Nvidia Cosmos Reason-1
+############################
+
 # Allow running this file directly via:
 #   python src/vlm/vlm_test.py --video_path ...
 # without setting PYTHONPATH.
@@ -72,17 +77,15 @@ def slice_video_into_frames(video_path: str, output_dir: str, fps: int)-> list[s
         output_dir: Directory where the frames will be saved.
         fps: Frames per second to extract (optional)."""
 
-    FRAME_CAP = 30 # Maximum number of frames to extract
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
 
     # wipe the dir and make a new one
     path_to_output_dir = os.path.join(SRC_ROOT, "..", "runs", "vlm_test_outputs", output_dir)
     if os.path.exists(path_to_output_dir):
         shutil.rmtree(path_to_output_dir)
     os.makedirs(path_to_output_dir, exist_ok=True)
-    cap = cv2.VideoCapture(video_path)
-
-    if not cap.isOpened():
-        raise ValueError(f"Could not open video file: {video_path}")
 
     # Get the original FPS of the video
     original_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -151,7 +154,18 @@ def main():
         default=None,
         help="Random seed for testing variance in response."
     )
+    parser.add_argument(
+        "--frame_rate",
+        type=int,
+        help="Frame rate for slicing video into frames (default: 4)."
+    )
     args = parser.parse_args()
+
+    if args.frame_rate and not args.as_images:
+        logger.warning("Frame rate argument is ignored when --as_images is not set.")
+
+    if not args.frame_rate:
+        args.frame_rate = SAMPLE_FPS  # Default frame rate for slicing
 
     # Load configuration
     sys_cfg_path = os.path.join(SRC_ROOT, "..", "configs", "refineconfig.yaml")
@@ -161,7 +175,7 @@ def main():
             logger.info(f"Loaded VLM configuration from {sys_cfg_path}")
     except FileNotFoundError:
         logger.error(f"Configuration file not found: {sys_cfg_path}")
-        raise
+        raise 
 
     # Hardcoded task descriptions for testing
     task_path = os.path.join(os.path.dirname(__file__), "task_description.txt")
@@ -172,9 +186,9 @@ def main():
         logger.error(f"Task description file not found: {task_path}")
         raise
 
-    if not os.path.isfile(args.video_path):
-        logger.error(f"Video file not found: {args.video_path}")
-        raise FileNotFoundError(f"Video file not found: {args.video_path}")
+    # Check if the video file exists
+    if not os.path.isfile(args.video_path) or not args.video_path.endswith(".mp4"):
+        raise FileNotFoundError (f"Video file not found or invalid format: {args.video_path}")
 
     # Get the date-time of the video
     grandparent_path = os.path.dirname(
@@ -182,16 +196,20 @@ def main():
     )
     grandparent_name = os.path.basename(grandparent_path)
 
+    # Create output folder for JSONL and frames
+    output_dir = os.path.join(SRC_ROOT, "..", "runs", "vlm_test_outputs", f"{grandparent_name}__{os.path.basename(args.video_path)}_output")
+    os.makedirs(output_dir, exist_ok=True)
+
     # Get feedback based on input video or sliced frames
     if not args.as_images:
         # Critique the video directly
         vlm_agent = VLMFeedbackAgent(task_description, sys_cfg)
         feedback = vlm_agent.critique_video(args.video_path)
     else:
-        # slice the video
-        SAMPLE_FPS = 4                      # fps of Nvidia Cosmos Reason-1
-        image_output_dir = f"{grandparent_name}__{os.path.basename(args.video_path)}_output_frames"
-        image_list = slice_video_into_frames(args.video_path, image_output_dir, SAMPLE_FPS)
+        # slice the video                  
+        logger.info(f"Slicing video into frames at {args.frame_rate} fps... Capped at {FRAME_CAP} frames.")
+        image_output_dir = os.path.join(output_dir, "sliced_frames")
+        image_list = slice_video_into_frames(args.video_path, image_output_dir, args.frame_rate)
         logger.info("Slicing complete. Number of frames saved: {}".format(len(image_list)))
         # Critique the sliced frames
         vlm_agent = VLMFeedbackAgent(task_description, sys_cfg)
@@ -203,19 +221,20 @@ def main():
         "model": sys_cfg.get("model"),
         "task_description": task_description,
         "date_time": grandparent_name,  
+        "FPS": args.frame_rate,
         "seed": args.seed,
         "vlm_feedback": feedback,
         "human_feedback": None,  # Placeholder for human feedback
     }
     if sys_cfg.get("jsonl_enabled", True):
-        jsonl_path = os.path.join(SRC_ROOT, "..", "runs", "vlm_test_outputs", f"{grandparent_name}_{os.path.basename(args.video_path)}.jsonl")
+        jsonl_path = os.path.join(output_dir, "feedback.jsonl")
         os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
         with open(jsonl_path, "a", encoding="utf-8") as f:
             json.dump(jsonl_record, f, indent=1)
             f.write("\n\n")  # Ensure each record is on a new line
         logger.info(f"Feedback saved to JSONL file: {jsonl_path}")
     else:
-        logger.info("JSONL logging is disabled; feedback not saved to file.")
+        logger.warning("JSONL logging is disabled; feedback not saved to file.")
 
 if __name__ == "__main__":
     main()

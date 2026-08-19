@@ -60,7 +60,7 @@ class VLMFeedbackAgent:
         """
         video_content = self._build_video_content(video_path)
         messages = self._build_messages([video_content])
-        logging.info("Video Critique requested. ")
+        logger.info("Video Critique requested. ")
         return self._call_vlm(messages, seed=seed)
 
     def critique_images(self, frame_paths: list[str], seed: int = None) -> str:
@@ -70,7 +70,7 @@ class VLMFeedbackAgent:
         sequence_note = {"type": "text", "text": "The following frames are sequential frames from a video clip, in chronological order."}
         image_content = self._build_image_content(frame_paths)
         messages = self._build_messages([sequence_note] + image_content)
-        logging.info("Image Critique requested. ")
+        logger.info("Image Critique requested. ")
         return self._call_vlm(messages, seed=seed)
 
     def _build_video_content(self, video_path: str) -> dict:
@@ -131,7 +131,6 @@ class VLMFeedbackAgent:
                 feedback = response.choices[0].message.content
                 if feedback is not None:
                     logger.info(f"VLM feedback received")
-                    logger.info(f"Storing raw response to attribute 'raw_response' for debugging.")
                         
                     return feedback
             except Exception as e:
