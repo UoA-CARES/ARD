@@ -7,9 +7,9 @@ Stage 2 — Automated reward refinement (Eureka-style):
   2. Each candidate is spliced into a fresh copy of the task repo (AST injection)
      and built + run as a local docker job (PPO / rl_games), one at a time.
   3. Finished jobs are scored by the task's fixed `fitness_function` metric; the
-     best candidate's training summary is fed back to the LLM for the next round.
-  4. After the search loop, the best candidate of the whole run is re-trained on
-     `num_eval` seeds once, and reported as mean +/- std over those seeds.
+     best candidate is re-trained `num_eval` times to de-noise its score, its
+     checkpoint carried into the next iteration (warm-starting), and its
+     training summary fed back to the LLM for the next round.
 
 Usage:
     export OPENROUTER_API_KEY=...            # LLM key
@@ -116,6 +116,11 @@ def run_refinement(settings, task_cfg, refine_cfg):
     num_eval = int(refine_cfg.get("num_eval", 1))
     base_seed = int(refine_cfg.get("base_seed", 0))
     max_workers = min(agent.samples, int(refine_cfg.get("max_workers", agent.samples)))
+    warm_start = bool(refine_cfg.get("warm_start", False))
+
+    # Checkpoint of the previous iteration's best candidate; None means cold
+    # start (always true for iteration 1, since there is no previous best yet).
+    warm_start_checkpoint = None
 
     # The single source of truth: every candidate's generation -> evaluation ->
     # judgement -> feedback lifecycle is recorded here, and it is thread-safe so
@@ -164,7 +169,12 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         # --- Run phase: dispatch + capture (evaluator), then judge (scorer) --
         logger.info(f"Evaluating {sum(r.has_method for r in run_records)} candidate(s)")
-        evaluator.evaluate(run_records)
+        if warm_start and warm_start_checkpoint:
+            logger.info(f"Warm-starting from {warm_start_checkpoint}")
+        evaluator.evaluate(
+            run_records,
+            checkpoint_path=warm_start_checkpoint if warm_start else None,
+        )
         scorer.score_all(run_records)
         best = scorer.select_best(run_records)
 
@@ -181,56 +191,41 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
 
+        # --- Eval phase: re-train the best reward num_eval times to score it --
+        eval_records = [
+            history.new_record(
+                iteration=i, index=k, phase="eval", tag=f"iter{i}_eval_{k}",
+                seed=base_seed + k + 1, model=agent.model, temperature=agent.temperature,
+                reward_method=best.reward_method, raw_response=best.raw_response,
+                status=STATUS_GENERATED,
+            )
+            for k in range(num_eval)
+        ]
+        evaluator.evaluate(
+            eval_records,
+            checkpoint_path=warm_start_checkpoint if warm_start else None,
+        )
+        scorer.score_all(eval_records)
+        best_eval = scorer.select_best(eval_records)
+
+        winner = best_eval or best
+        summary_path = winner.summary_path
+        if best_eval:
+            logger.info(f"Eval fitness (best of {num_eval}): {best_eval.fitness:.4f}")
+
+        # Carry this iteration's winning checkpoint into the next iteration.
+        if warm_start and winner.checkpoint_path:
+            warm_start_checkpoint = winner.checkpoint_path
+
         # --- Feedback phase: fold the outcome back into the conversation -----
-        # The summary must come from the run that was scored: the LLM is shown
-        # its own code next to that same run's numbers. Pairing the code with a
-        # different training run (a re-train on another seed) would describe two
-        # different trajectories and make the reflection misleading.
         # Today only the winner is fed back; because the history retains every
         # candidate with its summary, feeding the whole batch back later is just
         # a different read of `run_records` — no structural change needed.
-        feedback = agent.receive_feedback(
-            best.raw_response, summary_path=best.summary_path
-        )
+        feedback = agent.receive_feedback(best.raw_response, summary_path=summary_path)
         history.update(best, feedback_text=feedback)
         history.save_json()
 
     logger.info("Refinement loop complete")
-
-    # --- Eval phase: score the run's best reward over num_eval seeds ---------
-    # Once, after the search, on the best candidate of *all* iterations. Running
-    # it per iteration would spend the multi-seed budget re-training local bests
-    # that a later iteration discards, and still leave the final winner scored by
-    # a single seed. `select_best` over every run record marks that winner (and
-    # only it) as `selected_best` in the history.
-    best = scorer.select_best([r for r in history.all() if r.phase == "run"])
-    if best is None:
-        logger.error("No candidate trained successfully in any iteration; skipping eval")
-        return history
-
-    logger.info(
-        f"=== Eval phase: re-training {best.tag} (fitness {best.fitness:.4f}) "
-        f"on {num_eval} seed(s) ==="
-    )
-    eval_records = [
-        history.new_record(
-            iteration=best.iteration, index=k, phase="eval",
-            tag=f"{best.tag}_eval_{k}",
-            seed=base_seed + k + 1, model=best.model, temperature=best.temperature,
-            reward_method=best.reward_method, raw_response=best.raw_response,
-            status=STATUS_GENERATED,
-        )
-        for k in range(num_eval)
-    ]
-    evaluator.evaluate(eval_records)
-    scorer.score_all(eval_records)
-    values, mean, std = scorer.summarise(eval_records)
-    logger.info(
-        f"Eval fitness over {len(values)}/{num_eval} seed(s): "
-        f"mean={mean:.4f} std={std:.4f} "
-        f"[{', '.join(f'{v:.4f}' for v in values)}]"
-    )
-    history.save_json()
     return history
 
 
@@ -247,6 +242,10 @@ def main():
                         help="Path to task configuration YAML (used if --task is omitted)")
     parser.add_argument("--refineconfig", type=str, default="configs/refineconfig.yaml",
                         help="Path to refinement configuration YAML")
+    parser.add_argument("--warm-start", action="store_true",
+                        help="Resume each iteration from the previous iteration's "
+                             "de-noised winner instead of random weights (default: "
+                             "false, or refineconfig.yaml's warm_start).")
     args = parser.parse_args()
 
     settings = load_yaml_config(args.settings)
@@ -258,6 +257,8 @@ def main():
 
     if args.refine:
         refine_cfg = load_yaml_config(args.refineconfig)
+        if args.warm_start:
+            refine_cfg["warm_start"] = True
         run_refinement(settings, task_cfg, refine_cfg)
     else:
         parser.print_help()

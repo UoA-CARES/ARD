@@ -89,17 +89,28 @@ FitnessScorer.score_all / select_best  ──►  read fitness_function, pick th
 EurekaAgent.receive_feedback  ──►  fold that same run's summary back in (code and numbers from one run)
 ```
 
-## Eval phase — once per run, after the loop
+## Eval phase & warm-starting — once per iteration
 
-The loop only explores: one training per candidate, and the winner's own summary
-feeds the next round. Scoring happens once, after the last iteration.
-`FitnessScorer.select_best` over **every** iteration's run records picks the
-run-wide winner (the one record left with `selected_best` in
-`reward_history.json`); it is re-trained on `num_eval` seeds and reported as
-**mean ± std** over them, since a max over seeds would report the luckiest seed's
-best moment (per-seed fitness is already a max over training events). Each seed
-stays in the history as its own record. Cost per task is
-`iteration * sample + num_eval` trainings.
+Each iteration's run-phase winner (`FitnessScorer.select_best` over that
+iteration's `sample` candidates) is re-trained `num_eval` times, on different
+seeds, before anything is committed to feedback or warm-starting — a single
+run's fitness is seed-noisy, so this de-noises it. `select_best` over those
+eval records picks the iteration's actual winner (`best_eval`, falling back to
+the run-phase `best` if every eval retrain failed to score); each seed stays in
+the history as its own record. Cost per task is `iteration * (sample + num_eval)`
+trainings.
+
+That winner's checkpoint (`RewardRecord.checkpoint_path`, set by
+`RewardEvaluator` after each successful run — see `find_checkpoint` in
+`result_processor.py`) is then carried into the *next* iteration as
+`warm_start_checkpoint`, when `warm_start` is enabled: every candidate in the
+next iteration's run and eval phases resumes training from it instead of
+random weights (baked into that candidate's build tarball, delivered via
+`--checkpoint`; see `evaluator.py`'s `_build_env`/`_build_hpc_command` and
+`_effective_max_iterations`, which extends the configured epoch budget by the
+checkpoint's own inherited epoch count). Iteration 1 always cold-starts, since
+no previous winner exists yet; `warm_start_checkpoint` also only lives for one
+continuous `--refine` invocation, not across separate runs.
 
 ## Module map (`src/`)
 

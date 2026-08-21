@@ -168,17 +168,75 @@ class RewardEvaluator:
         return self.workspace.get_env_source()
 
     # ---------------------------------------------------------------- evaluate
-    def _build_env(self, seed: Optional[int]) -> Dict[str, str]:
+    @staticmethod
+    def _checkpoint_epoch(checkpoint_path: str) -> Optional[int]:
+        """Read the epoch count rl_games saved inside a checkpoint.
+
+        rl_games checkpoints bundle their own epoch counter alongside the
+        weights (``a2c_common.py``: ``state['epoch'] = self.epoch_num`` on
+        save, ``self.epoch_num = weights['epoch']`` on load) — loading a
+        checkpoint resumes the epoch count, not just the network. Returns
+        None (rather than raising) if the file can't be read, e.g. torch
+        isn't installed in this process — callers fall back to the
+        configured budget as-is.
+        """
+        try:
+            import torch
+            state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            return int(state.get("epoch", 0))
+        except Exception as e:  # noqa: BLE001 - any read/unpickle failure
+            logger.warning(f"Could not read epoch count from {checkpoint_path}: {e}")
+            return None
+
+    def _effective_max_iterations(self, checkpoint_path: Optional[str]) -> Optional[str]:
+        """The ``--max_iterations`` value for one job, accounting for warm-start.
+
+        Without this, warm-starting from a checkpoint that already reached the
+        configured ``MAX_ITERATIONS`` immediately hits that same ceiling on
+        load (rl_games restores the checkpoint's own epoch count) and stops
+        after ~0 additional epochs. Extending the ceiling by the checkpoint's
+        inherited epoch count guarantees every candidate still gets the full
+        configured budget of *new* training on top of what it resumed from.
+        Returns None if no ``MAX_ITERATIONS`` is configured at all (the task's
+        own ``max_epochs`` default applies, unaffected by this).
+        """
+        configured = self.env_extra.get("MAX_ITERATIONS")
+        if configured is None:
+            return None
+        if not checkpoint_path:
+            return str(configured)
+        epoch = self._checkpoint_epoch(checkpoint_path)
+        if epoch is None:
+            return str(configured)
+        return str(epoch + int(configured))
+
+    def _build_env(
+        self, seed: Optional[int], checkpoint_path: Optional[str] = None
+    ) -> Dict[str, str]:
         """Container env for one job: the task, its seed, and any configured extras.
 
-        The ard-isaaclab-tasks image entrypoint reads ``TASK`` and ``SEED`` (plus
-        optional ``MAX_ITERATIONS``/``NUM_ENVS``/``WANDB_*``) from the env, so the
-        per-eval seed is now honoured (the old quickstart command path ignored it).
+        The ard-isaaclab-tasks image entrypoint (``scripts/pcs_entrypoint.sh``)
+        reads ``TASK`` and ``SEED`` (plus optional ``MAX_ITERATIONS``/``NUM_ENVS``/
+        ``WANDB_*``) from the env, so the per-eval seed is now honoured (the old
+        quickstart command path ignored it). It has no dedicated checkpoint env
+        var, so warm-start rides its ``EXTRA_ARGS`` catch-all instead (verbatim
+        extra flags appended to ``train.py``) as ``--checkpoint <path>``, pointed
+        at the fixed in-image path the checkpoint was baked to by
+        ``WorkspaceManager.build_codebase`` (``config.WARM_START_CHECKPOINT_REL``
+        under ``config.IMAGE_REPO_ROOT``) — the host-side ``checkpoint_path`` here
+        only decides *whether* one was baked in, not the path used. Appended
+        after any user-configured ``EXTRA_ARGS`` from ``runner.env``.
         """
         env = {"TASK": self.task}
         if seed is not None:
             env["SEED"] = str(seed)
         env.update({k: str(v) for k, v in self.env_extra.items()})
+        max_iterations = self._effective_max_iterations(checkpoint_path)
+        if max_iterations is not None:
+            env["MAX_ITERATIONS"] = max_iterations
+        if checkpoint_path:
+            ckpt_flag = f"--checkpoint {config.IMAGE_REPO_ROOT}/{config.WARM_START_CHECKPOINT_REL}"
+            env["EXTRA_ARGS"] = f"{env.get('EXTRA_ARGS', '')} {ckpt_flag}".strip()
         return env
 
     def _build_command(self, seed: Optional[int]) -> Optional[str]:
@@ -190,7 +248,9 @@ class RewardEvaluator:
             seed="" if seed is None else seed,
         )
 
-    def _build_hpc_command(self, seed: Optional[int]) -> str:
+    def _build_hpc_command(
+        self, seed: Optional[int], checkpoint_path: Optional[str] = None
+    ) -> str:
         """Build the ``hpc_entrypoint.sh`` command for one job.
 
         The CARES scheduler drops the job ``env`` block, so task/seed/tunables
@@ -198,13 +258,19 @@ class RewardEvaluator:
         env). ``MAX_ITERATIONS`` / ``NUM_ENVS`` from ``runner.env`` are therefore
         translated into ``--max_iterations`` / ``--num_envs`` flags. (WANDB_* are
         intentionally not forwarded: they cannot reach the container via command
-        without exposing the key in ``hpc-client jobs``.)
+        without exposing the key in ``hpc-client jobs``.) ``checkpoint_path``
+        (warm-start) rides the same way, as ``--checkpoint``, matching
+        ``scripts/train.py``'s own flag — pointed at the fixed in-image path
+        the checkpoint was baked to (see ``_build_env``), not the host path.
         """
         flags = ["--task", self.task]
         if seed is not None:
             flags += ["--seed", str(seed)]
-        if self.env_extra.get("MAX_ITERATIONS") is not None:
-            flags += ["--max_iterations", str(self.env_extra["MAX_ITERATIONS"])]
+        if checkpoint_path:
+            flags += ["--checkpoint", f"{config.IMAGE_REPO_ROOT}/{config.WARM_START_CHECKPOINT_REL}"]
+        max_iterations = self._effective_max_iterations(checkpoint_path)
+        if max_iterations is not None:
+            flags += ["--max_iterations", max_iterations]
         if self.env_extra.get("NUM_ENVS") is not None:
             flags += ["--num_envs", str(self.env_extra["NUM_ENVS"])]
 
@@ -223,6 +289,7 @@ class RewardEvaluator:
     def evaluate(
         self,
         records: List[RewardRecord],
+        checkpoint_path: Optional[str] = None,
     ) -> List[RewardRecord]:
         """
         Train a batch of candidate records and capture their output.
@@ -232,14 +299,17 @@ class RewardEvaluator:
         pushes each candidate's image, submits the whole batch to the CARES
         scheduler, then recycles NAS artifacts as jobs finish. Either way this
         mutates each record in place: it sets ``status``, ``eval_error`` and (on
-        success) the captured ``log_path`` / ``tb_path`` / ``summary_path``.
-        Fitness and best-selection are left to :class:`FitnessScorer`.
-        Training length is controlled by each task's ``max_epochs`` in its
-        ``rl_games_ppo_cfg.yaml``.
+        success) the captured ``log_path`` / ``tb_path`` / ``summary_path`` /
+        ``checkpoint_path``. Fitness and best-selection are left to
+        :class:`FitnessScorer`. Training length is controlled by each task's
+        ``max_epochs`` in its ``rl_games_ppo_cfg.yaml``.
 
         Args:
-            records: Candidate records. Each must carry ``reward_method`` (records
+                records: Candidate records. Each must carry ``reward_method`` (records
                 whose generation failed are skipped) and provides ``tag`` / ``seed``.
+                checkpoint_path: Warm-start checkpoint (e.g. the previous iteration's
+                best candidate) to resume every job in this batch from. None
+                means every job trains from scratch.
 
         Returns:
             The same ``records`` list, mutated in place.
@@ -257,8 +327,8 @@ class RewardEvaluator:
 
         try:
             if self.backend == "hpc":
-                return self._evaluate_hpc(records)
-            return self._evaluate_local(records)
+                return self._evaluate_hpc(records, checkpoint_path)
+            return self._evaluate_local(records, checkpoint_path)
         except KeyboardInterrupt:
             # Manual kill (Ctrl-C): stop whatever the backend left running so we
             # don't strand a training container (local) or cluster jobs (hpc),
@@ -268,7 +338,9 @@ class RewardEvaluator:
             raise
 
     # ----------------------------------------------------------- local backend
-    def _evaluate_local(self, records: List[RewardRecord]) -> List[RewardRecord]:
+    def _evaluate_local(
+        self, records: List[RewardRecord], checkpoint_path: Optional[str] = None
+    ) -> List[RewardRecord]:
         """Build -> run -> capture each candidate in turn on the local machine."""
         pending = [r for r in records if r.has_method]
         logger.info(f"Running {len(pending)} candidate(s), one at a time")
@@ -281,7 +353,9 @@ class RewardEvaluator:
                 continue
             tag = record.tag
             try:
-                tarball = self.workspace.build_codebase(record.reward_method, tag)
+                tarball = self.workspace.build_codebase(
+                    record.reward_method, tag, checkpoint_path
+                )
             except RewardInjectionError as e:
                 logger.error(f"[{tag}] reward injection failed: {e}")
                 record.status = STATUS_BUILD_FAILED
@@ -291,7 +365,7 @@ class RewardEvaluator:
             result = self.runner.run(
                 tarball_path=tarball,
                 work_dir=os.path.join(self.output_dir, tag),
-                env=self._build_env(record.seed),
+                env=self._build_env(record.seed, checkpoint_path),
                 command=self._build_command(record.seed),
                 build_args=self.build_args,
                 timeout_seconds=self.timeout_seconds,
@@ -309,11 +383,14 @@ class RewardEvaluator:
             record.log_path = captured.log_path
             record.tb_path = captured.tb_path
             record.summary_path = captured.summary_path
+            record.checkpoint_path = captured.checkpoint_path
 
         return records
 
     # ------------------------------------------------------------- hpc backend
-    def _evaluate_hpc(self, records: List[RewardRecord]) -> List[RewardRecord]:
+    def _evaluate_hpc(
+        self, records: List[RewardRecord], checkpoint_path: Optional[str] = None
+    ) -> List[RewardRecord]:
         """Submit the whole batch to the CARES scheduler, then recycle as they finish.
 
         Two phases so jobs train *concurrently* on the cluster:
@@ -348,7 +425,9 @@ class RewardEvaluator:
                 continue
             tag = record.tag
             try:
-                tarball = self.workspace.build_codebase(record.reward_method, tag)
+                tarball = self.workspace.build_codebase(
+                    record.reward_method, tag, checkpoint_path
+                )
             except RewardInjectionError as e:
                 logger.error(f"[{tag}] reward injection failed: {e}")
                 record.status = STATUS_BUILD_FAILED
@@ -358,7 +437,7 @@ class RewardEvaluator:
                 job = self.runner.submit(
                     tarball_path=tarball,
                     tag=tag,
-                    command=self._build_hpc_command(record.seed),
+                    command=self._build_hpc_command(record.seed, checkpoint_path),
                     max_runtime_hours=self.max_runtime_hours,
                     datasets=self.datasets,
                     job_name=f"{self.job_name_prefix}_{tag}",
@@ -425,6 +504,7 @@ class RewardEvaluator:
                 record.log_path = captured.log_path
                 record.tb_path = captured.tb_path
                 record.summary_path = captured.summary_path
+                record.checkpoint_path = captured.checkpoint_path
                 record.status = "succeeded"
                 logger.info(f"[{record.tag}] completed and captured")
             if outstanding:

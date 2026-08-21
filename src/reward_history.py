@@ -77,6 +77,7 @@ class RewardRecord:
     log_path: Optional[str] = None       # extracted run dir
     tb_path: Optional[str] = None        # TensorBoard event file
     summary_path: Optional[str] = None   # human-readable scalar summary
+    checkpoint_path: Optional[str] = None  # saved policy checkpoint (rl_games .pth)
 
     # --- judgement (fitness scorer) -----------------------------------------
     fitness: float = field(default_factory=lambda: float("-inf"))
