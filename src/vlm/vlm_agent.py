@@ -34,6 +34,7 @@ class VLMFeedbackAgent:
         self.max_output_tokens = int(agent_config.get("max_output_tokens", 600))
         self.timeout_seconds = int(agent_config.get("timeout_seconds", 90))
         self.task_description = task_description
+        self.frequency_penalty = float(agent_config.get("frequency_penalty", 0.3))
 
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
@@ -107,7 +108,7 @@ class VLMFeedbackAgent:
         Builds a list of messages for the VLM model based on the provided content items.
         """
         content = [{"type": "text", 
-                    "text": f"Critique this task: {self.task_description}"}] + content_items
+                    "text": self.task_description}] + content_items
 
         return self.sys_message + [{"role": "user", "content": content}]
 
@@ -126,7 +127,8 @@ class VLMFeedbackAgent:
                     temperature=self.temperature,
                     max_tokens=self.max_output_tokens,
                     timeout=self.timeout_seconds,
-                    seed=seed
+                    seed=seed,
+                    frequency_penalty=self.frequency_penalty
                 )
                 feedback = response.choices[0].message.content
                 if feedback is not None:
