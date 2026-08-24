@@ -31,7 +31,7 @@ class VLMFeedbackAgent:
         self.model = agent_config.get("model")
         self.base_url = agent_config.get("base_url")
         self.temperature = float(agent_config.get("temperature", 0.8))
-        self.max_output_tokens = int(agent_config.get("max_output_tokens", 600))
+        self.max_output_tokens = int(agent_config.get("max_output_tokens", 1000))
         self.timeout_seconds = int(agent_config.get("timeout_seconds", 90))
         self.task_description = task_description
         self.frequency_penalty = float(agent_config.get("frequency_penalty", 0.3))
@@ -68,7 +68,8 @@ class VLMFeedbackAgent:
         """
         Critiques a sequence of images and returns a natural language feedback.
         """
-        sequence_note = {"type": "text", "text": "The following frames are sequential frames from a video clip, in chronological order."}
+        sequence_note = {"type": "text", "text": "The following frames are labelled with its timestamp in seconds (e.g 0.14s). "
+            "Use these to judge the speed and timing of movements between frames."}
         image_content = self._build_image_content(frame_paths)
         messages = self._build_messages([sequence_note] + image_content)
         logger.info("Image Critique requested. ")
@@ -86,16 +87,23 @@ class VLMFeedbackAgent:
             "video_url": {"url": f"data:video/mp4;base64,{encoded_video}"},
         }
         
-    def _build_image_content(self, frame_paths: list[str]) -> list[dict]:
+    def _build_image_content(self, frame_paths: list[dict[str, any]]) -> list[dict]:
         """
         Read, encode, and prepare the image content for the VLM model.
         """
 
         content_list = []
 
-        for frame_path in frame_paths:
+        for item in frame_paths:
+            frame_path = item["frame_path"]
+            timestamp = item["timestamp"]
             with open(frame_path, "rb") as f:
                 encoded_image = base64.b64encode(f.read()).decode('utf-8')
+
+            content_list.append({
+                "type": "text",
+                "text": f"Frame at timestamp {timestamp:.2f} seconds."
+            })
 
             content_list.append({
                 "type": "image_url",
@@ -133,6 +141,7 @@ class VLMFeedbackAgent:
                 feedback = response.choices[0].message.content
                 if feedback is not None:
                     logger.info(f"VLM feedback received")
+                    logger.info(f"Finish Reasoning: {response.choices[0].finish_reason}")
                         
                     return feedback
             except Exception as e:

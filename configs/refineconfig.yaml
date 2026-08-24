@@ -21,10 +21,12 @@ agent:
 # VLM Critic agent settings
 vlm:
 # qwen/qwen3-coder-30b-a3b-instruct
-  model: "qwen/qwen3-vl-30b-a3b-instruct"   #  "qwen 2.5" # "cosmos-reason1 7b" # "gemini er 2.0"
+  model: "qwen/qwen3-vl-30b-a3b-instruct"       # Image Input Model
+  # model: "google/gemini-3.6-flash"              # Video Input Model
+  # model: "google/gemini-3.1-pro-preview"  # Video Input Model
   base_url: "https://openrouter.ai/api/v1"
   temperature: 0.3        # keep it low for critical evaluation, but not zero to avoid deterministic behavior
-  max_output_tokens: 400  # limit output length
+  max_output_tokens: 1200  # limit output length
   timeout_seconds: 90        # video clips are short so dont need too long
   frequency_penalty: 0.2    # Occassionally the vlm would repeat the same things over and over so this is to limit that
 

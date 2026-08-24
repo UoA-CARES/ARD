@@ -106,17 +106,21 @@ def slice_video_into_frames(video_path: str, output_dir: str, fps: int)-> list[s
 
     frame_counter = 0
     saved_frames = 0
+    image_list = []
 
     # Slice video into frames and save them
     while cap.isOpened() and saved_frames < FRAME_CAP:
+        timestamp = frame_counter / original_fps
         ret, frame = cap.read()
         if not ret:                 # End of video
             break
 
         # Match frame skip interval to sample fps
         if frame_counter % frame_skip_interval == 0:
-            frame_filename = os.path.join(path_to_output_dir, f"frame_{saved_frames:04d}.png")
-            cv2.imwrite(frame_filename, frame)
+            framepath = os.path.join(path_to_output_dir, f"frame_{saved_frames:04d}.png")
+
+            cv2.imwrite(framepath, frame)
+            image_list.append({"frame_path": framepath, "timestamp": timestamp})
             saved_frames += 1
 
         frame_counter += 1
@@ -125,11 +129,7 @@ def slice_video_into_frames(video_path: str, output_dir: str, fps: int)-> list[s
     cap.release()
 
     # Return the list of saved frame paths
-    image_list = []
-    for filename in sorted(os.listdir(path_to_output_dir)):
-        if filename.endswith(".png"):
-            image_list.append(os.path.join(path_to_output_dir, filename))
-    return image_list    
+    return image_list
 
 def main():
 
@@ -205,6 +205,7 @@ def main():
         # Critique the video directly
         vlm_agent = VLMFeedbackAgent(task_description, sys_cfg)
         feedback = vlm_agent.critique_video(args.video_path)
+        args.frame_rate = "Video"
     else:
         # slice the video                  
         logger.info(f"Slicing video into frames at {args.frame_rate} fps... Capped at {FRAME_CAP} frames.")
