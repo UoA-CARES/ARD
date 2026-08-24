@@ -21,8 +21,8 @@ agent:
 # VLM Critic agent settings
 vlm:
 # qwen/qwen3-coder-30b-a3b-instruct
-  model: "qwen/qwen3-vl-30b-a3b-instruct"       # Image Input Model
-  # model: "google/gemini-3.6-flash"              # Video Input Model
+  # model: "qwen/qwen3-vl-30b-a3b-instruct"       # Image Input Model
+  model: "google/gemini-3.6-flash"              # Video Input Model
   # model: "google/gemini-3.1-pro-preview"  # Video Input Model
   base_url: "https://openrouter.ai/api/v1"
   temperature: 0.3        # keep it low for critical evaluation, but not zero to avoid deterministic behavior
