@@ -4,7 +4,7 @@
 # Path to the ard-isaaclab-tasks checkout — the RL task substrate ARD trains
 # against. Each candidate reward is injected into a task env file inside a fresh
 # copy of this repo, packaged, and built + run locally as a docker job.
-tasks_repo: "/home/harsh/Documents/Github/ard-isaaclab-tasks"
+tasks_repo: "/home/andrew/code/ard-isaaclab-tasks"
 
 # Where ARD runs each candidate and keeps its logs. Every candidate's training
 # job runs in its own <output_dir>/<task>/<tag>/ directory (the container's /work
@@ -64,7 +64,7 @@ runner:
   # ard-isaaclab-tasks/scripts/hpc_push.sh) so `docker push` works.
   hpc:
     registry: "130.216.238.2:5500"       # CARES container registry
-    image_repo: "cli797_ard-isaaclab"    # <registry>/<image_repo>:<candidate-tag>
+    image_repo: "akoh751_ard-isaaclab"    # <registry>/<image_repo>:<candidate-tag>
     nas_outputs: "~/hpc_outputs"         # local mount of the NAS outputs share
     max_runtime_hours: 2.0               # per-job wall-clock cap the scheduler enforces
     poll_seconds: 30                     # how often the monitor loop polls each job

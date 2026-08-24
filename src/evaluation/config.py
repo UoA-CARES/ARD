@@ -68,7 +68,7 @@ DEFAULT_BACKEND = "local"
 # is the image the submitted job pulls. Matches scripts/hpc_push.sh in
 # ard-isaaclab-tasks.
 DEFAULT_HPC_REGISTRY = "130.216.238.2:5500"
-DEFAULT_HPC_IMAGE_REPO = "cli797_ard-isaaclab"
+DEFAULT_HPC_IMAGE_REPO = "akoh751_ard-isaaclab"
 
 # The in-image entrypoint every HPC job runs; ARD appends --task/--seed/… as
 # argv because the scheduler does NOT inject the job `env` block (see
