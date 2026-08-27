@@ -78,10 +78,12 @@ class RewardRecord:
     tb_path: Optional[str] = None        # TensorBoard event file
     summary_path: Optional[str] = None   # human-readable scalar summary
     checkpoint_path: Optional[str] = None  # saved policy checkpoint (rl_games .pth)
+    video_paths: Optional[list[str]] = None # path to the recorded videos (play.py output)
 
     # --- judgement (fitness scorer) -----------------------------------------
     fitness: float = field(default_factory=lambda: float("-inf"))
     selected_best: bool = False          # chosen as the batch winner
+    vlm_feedback: Optional[str] = None   # exact feedback sent by the VLM (if any), folded into feedback_text
     feedback_text: Optional[str] = None  # exact feedback sent to the LLM
 
     # --- bookkeeping --------------------------------------------------------
