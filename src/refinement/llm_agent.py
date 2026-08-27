@@ -81,7 +81,7 @@ class EurekaAgent:
             {"role": "user", "content": user_content},
         ]
 
-    def receive_feedback(self, best_response_text: str, summary_path: str = None) -> str:
+    def receive_feedback(self, best_response_text: str, summary_path: str = None, vlm_feedback: str = None) -> str:
         """
         Fold the previous iteration's outcome into the conversation.
 
@@ -89,6 +89,7 @@ class EurekaAgent:
             best_response_text: Raw LLM response that produced the best run.
             summary_path: Path to that run's training_summary.txt, or None if the
                 iteration failed entirely (signals a hard reset).
+            vlm_feedback: Feedback from the VLM, if any.
 
         Returns:
             The exact feedback message text appended to the conversation (so the
@@ -97,19 +98,26 @@ class EurekaAgent:
         if summary_path and os.path.exists(summary_path):
             with open(summary_path, "r") as f:
                 summary = f.read()
-            feedback_content = (
-                self.prompts["policy_feedback"]
-                + "\n"
-                + summary
-                + "\n"
-                + self.prompts["code_feedback"]
-            )
+
+            parts = [
+                self.prompts["policy_feedback"],
+                summary,
+            ]
+
+            # If VLM feedback exists, include it in the feedback message and adjust the instruction prompt accordingly.
+            if vlm_feedback and vlm_feedback.strip():
+                parts.append(self.prompts["vlm_feedback"].format(vlm_feedback=vlm_feedback))
+                parts.append(self.prompts["vlm_feedback_tips"])
+            else:
+                parts.append(self.prompts["code_feedback"])
+            feedback_content = "\n\n".join(parts)
+
         else:
             feedback_content = self.prompts["execution_error_feedback"].format(
                 traceback_msg="No reward function trained successfully this "
                 "iteration. Rewrite an entirely new reward function."
             )
-        feedback_content += self.code_output_tip
+        feedback_content += "\n\n" + self.code_output_tip
 
         assistant_msg = {"role": "assistant", "content": best_response_text}
         user_msg = {"role": "user", "content": feedback_content}

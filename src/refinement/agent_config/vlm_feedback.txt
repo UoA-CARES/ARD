@@ -1,0 +1,4 @@
+Below is evaluation feedback from a Vision-Language Model (VLM) observing policy behavior.
+It details behavioral issues and offers targeted suggestions for refining the reward function:
+
+{vlm_feedback}
