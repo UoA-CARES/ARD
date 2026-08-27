@@ -305,11 +305,11 @@ class RewardEvaluator:
         flags += ["--num_envs", "1"]                 # Will always be 1 for play.py, since we only want to generate one set of videos per candidate
         flags += ["--headless"]                      # Play.py should always be headless, since we don't want to render the environment for play.py  
 
-        # extra = self.hpc_extra_args
+        extra = self.hpc_extra_args
 
         command = config.HPC_ENTRYPOINT + " " + " ".join(shlex.quote(f) for f in flags)
-        # if extra:
-        #     command += " " + extra
+        if extra:
+            command += " " + extra
         return command
 
     def evaluate(
@@ -366,7 +366,7 @@ class RewardEvaluator:
     def record_videos(
         self, 
         record: RewardRecord,  
-    ) -> Optional[str]:
+    ) -> Optional[list[str]]:
 
         """Record videos for a candidate record using play.py.
         
@@ -375,12 +375,12 @@ class RewardEvaluator:
 
         if not record:
             logger.error("No record provided for video recording")
-            return None
+            return []
         if not self.workspace.validate():
             logger.error("Workspace validation failed")
             record.status = STATUS_BUILD_FAILED
             record.eval_error = "workspace validation failed"
-            return None
+            return []
 
         try:
             if self.backend == "hpc":
@@ -573,7 +573,7 @@ class RewardEvaluator:
     def _record_videos_hpc(
         self, 
         record: RewardRecord, 
-    ) -> Optional[str]:
+    ) -> Optional[list[str]]:
         """ Submit the best reward candidate for video recording using play.py on the HPC backend.
             Monitors the job and collects the videos once the job is completed.
 
@@ -585,14 +585,14 @@ class RewardEvaluator:
             logger.error(f"[{record.tag}] No checkpoint path provided for video recording")
             record.status = STATUS_BUILD_FAILED
             record.eval_error = "no checkpoint path provided for video recording"
-            return None
+            return []
 
         # Check if the record has a valid reward method to use for video recording
         if not record.has_method:
             logger.error(f"[{record.tag}] No reward method provided for video recording")
             record.status = STATUS_BUILD_FAILED
             record.eval_error = "no reward method provided for video recording"
-            return None
+            return []
 
         # Point output to the same directory as the checkpoint, so the videos are collected in the same place
         tag = record.tag
@@ -612,7 +612,7 @@ class RewardEvaluator:
             logger.error(f"[{tag}] reward injection failed: {e}")
             record.status = STATUS_BUILD_FAILED
             record.eval_error = f"injection: {e}"
-            return None
+            return []
 
         try:
             job = self.runner.submit(
@@ -628,8 +628,8 @@ class RewardEvaluator:
             logger.error(f"[{tag}] submit failed: {e}")
             record.status = STATUS_BUILD_FAILED
             record.eval_error = f"submit: {e}"
-            return None
-        
+            return []
+                
         # --- Phase B: Monitor + collect videos
         logger.info(
             f"Monitoring HPC job {job.job_id}; polling every "
@@ -659,13 +659,13 @@ class RewardEvaluator:
                     logger.error(f"[{record.tag}] No results collected after retries")
                     record.status = "failed"
                     record.eval_error = "no results collected after retries"
-                    return None
+                    return []
 
             if status != "completed":
                 logger.warning(f"[{record.tag}] job {current_job.job_id} {status}")
                 record.status = "failed"
                 record.eval_error = f"hpc job {status}"
-                return None
+                return []
             break
 
 
@@ -676,14 +676,13 @@ class RewardEvaluator:
             logger.error(f"[{record.tag}] No videos found in {run_dir}")
             record.status = "failed"
             record.eval_error = "no videos found"
-            return None
+            return []
 
         record.status = "succeeded"
+        logger.info(f"[{tag}] Successfully generated videos in: {videos}")
 
-        # Return the single string path to the video directory
-        video_dir = os.path.join(run_dir, "videos", "play")
-        logger.info(f"[{tag}] Successfully generated videos in: {video_dir}")
-        return video_dir
+        # Return the list of string paths to the video directories
+        return videos
 
 
     def _retry_no_results(
