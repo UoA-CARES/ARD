@@ -83,7 +83,6 @@ class RewardRecord:
     # --- judgement (fitness scorer) -----------------------------------------
     fitness: float = field(default_factory=lambda: float("-inf"))
     selected_best: bool = False          # chosen as the batch winner
-    vlm_feedback: Optional[str] = None   # exact feedback sent by the VLM (if any), folded into feedback_text
     feedback_text: Optional[str] = None  # exact feedback sent to the LLM
 
     # --- bookkeeping --------------------------------------------------------
