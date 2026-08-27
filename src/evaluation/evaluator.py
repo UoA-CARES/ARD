@@ -38,6 +38,7 @@ from src.reward_history import (
     STATUS_BUILD_FAILED,
     STATUS_SUBMITTED,
     STATUS_NO_METRICS,
+    STATUS_PENDING,
 )
 
 logger = logging.getLogger(__name__)
@@ -286,6 +287,31 @@ class RewardEvaluator:
             command += " " + extra
         return command
 
+    def _build_play_hpc_command(
+        self, seed: Optional[int]
+    ) -> str:
+        """Build the ``hpc_entrypoint.sh`` command for one job
+
+        Usage is similar to _build_hpc_command, but this is for play.py instead of train.py.
+        ``--checkpoint`` is not needed for play.py, and cameras are always enabled for play.py.
+        The ``checkpoint.pth`` file used for play.py is the best checkpoint taken from the training phase,
+        which is baked into the image by the WorkspaceManager.build_codebase() method.
+        """
+
+        flags = ["play", "--task", self.task]
+        if seed is not None:
+            flags += ["--seed", str(seed)]
+        flags += ["--video"]
+        flags += ["--num_envs", "1"]                 # Will always be 1 for play.py, since we only want to generate one set of videos per candidate
+        flags += ["--headless"]                      # Play.py should always be headless, since we don't want to render the environment for play.py  
+
+        # extra = self.hpc_extra_args
+
+        command = config.HPC_ENTRYPOINT + " " + " ".join(shlex.quote(f) for f in flags)
+        # if extra:
+        #     command += " " + extra
+        return command
+
     def evaluate(
         self,
         records: List[RewardRecord],
@@ -334,6 +360,38 @@ class RewardEvaluator:
             # don't strand a training container (local) or cluster jobs (hpc),
             # then re-raise so the interrupt still tears the run down.
             logger.warning("evaluation interrupted; terminating running jobs")
+            self.runner.terminate()
+            raise
+
+    def record_videos(
+        self, 
+        record: RewardRecord,  
+    ) -> Optional[str]:
+
+        """Record videos for a candidate record using play.py.
+        
+        Used either for hpc or local backend. Local backend is yet to be implemented, but the hpc backend is implemented in this method.
+        """
+
+        if not record:
+            logger.error("No record provided for video recording")
+            return None
+        if not self.workspace.validate():
+            logger.error("Workspace validation failed")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = "workspace validation failed"
+            return None
+
+        try:
+            if self.backend == "hpc":
+                return self._record_videos_hpc(record)
+            else:
+                raise NotImplementedError("Video recording for local backend is not implemented")
+        except KeyboardInterrupt:
+            # Manual kill (Ctrl-C): stop whatever the backend left running so we
+            # don't strand a training container (local) or cluster jobs (hpc),
+            # then re-raise so the interrupt still tears the run down.
+            logger.warning("video recording interrupted; terminating running jobs")
             self.runner.terminate()
             raise
 
@@ -511,6 +569,122 @@ class RewardEvaluator:
                 time.sleep(self.poll_seconds)
 
         return records
+
+    def _record_videos_hpc(
+        self, 
+        record: RewardRecord, 
+    ) -> Optional[str]:
+        """ Submit the best reward candidate for video recording using play.py on the HPC backend.
+            Monitors the job and collects the videos once the job is completed.
+
+            Returns the path to the directory containing the recorded videos, or None if the recording failed.
+        """
+
+        # Check if the record has a valid checkpoint path to use for video recording
+        if not record.checkpoint_path:
+            logger.error(f"[{record.tag}] No checkpoint path provided for video recording")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = "no checkpoint path provided for video recording"
+            return None
+
+        # Check if the record has a valid reward method to use for video recording
+        if not record.has_method:
+            logger.error(f"[{record.tag}] No reward method provided for video recording")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = "no reward method provided for video recording"
+            return None
+
+        # Point output to the same directory as the checkpoint, so the videos are collected in the same place
+        tag = record.tag
+        work_dir = os.path.join(self.output_dir, tag)
+
+        # Reset execution tracking fields only (do NOT wipe record metrics)
+        record.job_id = None
+        record.eval_error = None
+        record.status = STATUS_PENDING
+
+        # --- Phase A: Submit candidate for recording
+        try:
+            tarball = self.workspace.build_codebase(
+                record.reward_method, tag, record.checkpoint_path
+            )
+        except RewardInjectionError as e:
+            logger.error(f"[{tag}] reward injection failed: {e}")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = f"injection: {e}"
+            return None
+
+        try:
+            job = self.runner.submit(
+                tarball_path=tarball,
+                tag=tag,
+                command=self._build_play_hpc_command(record.seed),
+                max_runtime_hours=self.max_runtime_hours,
+                datasets=self.datasets,
+                job_name=f"{self.job_name_prefix}_{tag}",
+            )
+
+        except HPCRunnerError as e:
+            logger.error(f"[{tag}] submit failed: {e}")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = f"submit: {e}"
+            return None
+        
+        # --- Phase B: Monitor + collect videos
+        logger.info(
+            f"Monitoring HPC job {job.job_id}; polling every "
+            f"{self.poll_seconds:.0f}s"
+        )
+
+        current_job = job
+        while True:
+            status = self.runner.poll(current_job.job_id)
+            if not self.runner.is_terminal(status):
+                time.sleep(self.poll_seconds)
+                continue
+
+
+            collected = self.runner.collect(
+                current_job.job_id, work_dir, self.result_grace_seconds
+            )
+
+            if collected is None:
+                retry = self._retry_no_results(record, current_job, status)
+                if retry is not None:
+                    current_job = retry
+                    record.job_id = retry.job_id
+                    record.status = STATUS_SUBMITTED
+                    continue
+                else:
+                    logger.error(f"[{record.tag}] No results collected after retries")
+                    record.status = "failed"
+                    record.eval_error = "no results collected after retries"
+                    return None
+
+            if status != "completed":
+                logger.warning(f"[{record.tag}] job {current_job.job_id} {status}")
+                record.status = "failed"
+                record.eval_error = f"hpc job {status}"
+                return None
+            break
+
+
+        # Check for video artifacts
+        run_dir = os.path.join(work_dir, "logs", "rl_games","play")
+        videos = self.processor.find_videos(run_dir)
+        if not videos:
+            logger.error(f"[{record.tag}] No videos found in {run_dir}")
+            record.status = "failed"
+            record.eval_error = "no videos found"
+            return None
+
+        record.status = "succeeded"
+
+        # Return the single string path to the video directory
+        video_dir = os.path.join(run_dir, "videos", "play")
+        logger.info(f"[{tag}] Successfully generated videos in: {video_dir}")
+        return video_dir
+
 
     def _retry_no_results(
         self, record: RewardRecord, job: HPCJob, status: str

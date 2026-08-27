@@ -4,7 +4,7 @@
 # Path to the ard-isaaclab-tasks checkout — the RL task substrate ARD trains
 # against. Each candidate reward is injected into a task env file inside a fresh
 # copy of this repo, packaged, and built + run locally as a docker job.
-tasks_repo: "/home/andrew/code/ard-isaaclab-tasks"
+tasks_repo: "/home/andrew/ard-isaaclab-tasks"
 
 # Where ARD runs each candidate and keeps its logs. Every candidate's training
 # job runs in its own <output_dir>/<task>/<tag>/ directory (the container's /work

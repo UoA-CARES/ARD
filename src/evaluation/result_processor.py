@@ -17,7 +17,7 @@ output", while scoring is a separate, swappable step.
 import os
 import glob
 import logging
-from typing import Optional
+from typing import List, Optional
 from dataclasses import dataclass
 
 import numpy as np
@@ -86,6 +86,19 @@ class ResultProcessor:
         if best:
             return max(best, key=os.path.getmtime)
         return max(candidates, key=os.path.getmtime)
+
+    @staticmethod
+    def find_videos(run_dir: str) -> List[str]:
+        """Find the videos output by play.py under ``run_dir/videos/play`` for the VLM.
+
+        ard-isaaclab-tasks play.py writes videos to the same directory as the checkpoint, but 
+        in a subdirectory called ``videos/play``. This method returns a list of all video files 
+        found in that directory.
+        """
+        videos = glob.glob(os.path.join(run_dir, "videos", "play", "*.mp4"))
+        if not videos:
+            logger.warning(f"No videos found under {os.path.join(run_dir, 'videos', 'play')}")
+        return videos
 
     # --------------------------------------------------------------- capture
     def capture(self, work_dir: str) -> Optional[CapturedArtifacts]:
