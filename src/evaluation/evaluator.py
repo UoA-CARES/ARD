@@ -210,6 +210,18 @@ class RewardEvaluator:
             return str(configured)
         return str(epoch + int(configured))
 
+    def _plasticity_enabled(self) -> bool:
+        """Whether ``--plasticity`` should be appended to this job's training command.
+
+        Read from ``runner.env`` (either ``plasticity`` or ``PLASTICITY``, so a
+        plain ``plasticity: true`` in settings.yaml just works). This can't ride
+        as a plain passthrough env var like ``MAX_ITERATIONS``/``NUM_ENVS`` — the
+        image entrypoint (``pcs_entrypoint.sh``) doesn't read a dedicated
+        variable for it, so it has to go through the same ``EXTRA_ARGS``/command
+        translation as ``--checkpoint``.
+        """
+        return bool(self.env_extra.get("plasticity", self.env_extra.get("PLASTICITY", False)))
+
     def _build_env(
         self, seed: Optional[int], checkpoint_path: Optional[str] = None
     ) -> Dict[str, str]:
@@ -219,24 +231,34 @@ class RewardEvaluator:
         reads ``TASK`` and ``SEED`` (plus optional ``MAX_ITERATIONS``/``NUM_ENVS``/
         ``WANDB_*``) from the env, so the per-eval seed is now honoured (the old
         quickstart command path ignored it). It has no dedicated checkpoint env
-        var, so warm-start rides its ``EXTRA_ARGS`` catch-all instead (verbatim
-        extra flags appended to ``train.py``) as ``--checkpoint <path>``, pointed
-        at the fixed in-image path the checkpoint was baked to by
-        ``WorkspaceManager.build_codebase`` (``config.WARM_START_CHECKPOINT_REL``
-        under ``config.IMAGE_REPO_ROOT``) — the host-side ``checkpoint_path`` here
-        only decides *whether* one was baked in, not the path used. Appended
-        after any user-configured ``EXTRA_ARGS`` from ``runner.env``.
+        var, so warm-start and plasticity both ride its ``EXTRA_ARGS`` catch-all
+        instead (verbatim extra flags appended to ``train.py``) as
+        ``--checkpoint <path>`` and ``--plasticity`` respectively. The
+        checkpoint flag points at the fixed in-image path the checkpoint was
+        baked to by ``WorkspaceManager.build_codebase``
+        (``config.WARM_START_CHECKPOINT_REL`` under ``config.IMAGE_REPO_ROOT``)
+        — the host-side ``checkpoint_path`` here only decides *whether* one was
+        baked in, not the path used. Both are appended after any
+        user-configured ``EXTRA_ARGS`` from ``runner.env``.
         """
         env = {"TASK": self.task}
         if seed is not None:
             env["SEED"] = str(seed)
-        env.update({k: str(v) for k, v in self.env_extra.items()})
+        env.update({
+            k: str(v) for k, v in self.env_extra.items()
+            if k not in ("plasticity", "PLASTICITY")
+        })
         max_iterations = self._effective_max_iterations(checkpoint_path)
         if max_iterations is not None:
             env["MAX_ITERATIONS"] = max_iterations
+
+        extra_flags = []
         if checkpoint_path:
-            ckpt_flag = f"--checkpoint {config.IMAGE_REPO_ROOT}/{config.WARM_START_CHECKPOINT_REL}"
-            env["EXTRA_ARGS"] = f"{env.get('EXTRA_ARGS', '')} {ckpt_flag}".strip()
+            extra_flags.append(f"--checkpoint {config.IMAGE_REPO_ROOT}/{config.WARM_START_CHECKPOINT_REL}")
+        if self._plasticity_enabled():
+            extra_flags.append("--plasticity")
+        if extra_flags:
+            env["EXTRA_ARGS"] = f"{env.get('EXTRA_ARGS', '')} {' '.join(extra_flags)}".strip()
         return env
 
     def _build_command(self, seed: Optional[int]) -> Optional[str]:
@@ -262,6 +284,7 @@ class RewardEvaluator:
         (warm-start) rides the same way, as ``--checkpoint``, matching
         ``scripts/train.py``'s own flag — pointed at the fixed in-image path
         the checkpoint was baked to (see ``_build_env``), not the host path.
+        ``plasticity`` from ``runner.env`` is likewise appended as ``--plasticity``.
         """
         flags = ["--task", self.task]
         if seed is not None:
@@ -273,6 +296,8 @@ class RewardEvaluator:
             flags += ["--max_iterations", max_iterations]
         if self.env_extra.get("NUM_ENVS") is not None:
             flags += ["--num_envs", str(self.env_extra["NUM_ENVS"])]
+        if self._plasticity_enabled():
+            flags += ["--plasticity"]
 
         extra = self.hpc_extra_args
         # Vision tasks instantiate a TiledCamera, which train.py only allows with
