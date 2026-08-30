@@ -125,6 +125,9 @@ python main.py --refine --settings configs/settings.yaml \
                --refineconfig configs/refineconfig.yaml
 # enable warm-starting (off by default), overriding refineconfig.yaml's warm_start:
 python main.py --refine --task cartpole --warm-start
+
+# enable VLM feedback
+python main.py --refine --task cartpole --vlm
 ```
 
 To refine a different task, either point `taskconfig.yaml` at it (`task` + `env_file`) or pass `--task` with the directory name or the registered task ID:

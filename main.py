@@ -24,12 +24,15 @@ import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
+from typing import Optional
 import yaml
 from tqdm import tqdm
 
 from src.refinement.llm_agent import EurekaAgent
 from src.evaluation import RewardEvaluator, FitnessScorer
 from src.reward_history import RewardHistory, STATUS_GENERATED, STATUS_GEN_FAILED
+from src.vlm import VLM
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,6 +89,67 @@ def resolve_task_config(task_name, tasks_repo):
         f"No ard_meta.yaml for task '{task_name}' in {direct_root}. "
         f"Available: {available}"
     )
+def get_vlm_feedback(evaluator, winner, task_cfg, refine_cfg) -> Optional[str]:
+    """
+    Get feedback from the VLM module for the best reward candidate.
+
+    Args:
+        evaluator: The RewardEvaluator instance.
+        winner: The best candidate record from the refinement loop.
+        task_cfg: The task configuration dictionary.
+        refine_cfg: The refinement configuration dictionary.
+
+    Returns:
+        The feedback string from the VLM module, or None if feedback is not available.
+    """
+
+    if not refine_cfg.get("vlm_feedback", False):
+        logger.info("VLM feedback is disabled in the refinement configuration.")
+        return None
+    agent_config=refine_cfg.get("vlm", {})
+
+    # Check if the winner has a valid summary path for feedback
+    if not winner.summary_path or not os.path.exists(winner.summary_path):
+        logger.warning("Winner's summary path is not available for VLM feedback.")
+        return None
+
+    # Record the videos for the best candidate
+    video_paths = evaluator.record_videos(winner)
+    winner.video_paths = video_paths  # Store the recorded video paths in the winner record
+
+    # Get the task desc and any task-specific information for the VLM
+    task_description = task_cfg["description"]
+    task_specific_information = task_cfg.get("task_specific_instruction", "")
+
+    # Get the requested camera angle
+    camera_angle = agent_config.get("camera_angle", 0)
+    target_suffix = f"camera_{camera_angle}.mp4"
+
+    # Search for the video path ending with the target suffix
+    video_path = next(
+        (path for path in video_paths if path.endswith(target_suffix)), None
+    )
+
+    # Error check for video
+    if video_path is None:
+        logger.warning(
+            f"Video with suffix '{target_suffix}' not found in available videos. "
+        )
+        return None
+
+    # Initialise VLM
+    vlm = VLM(
+        video_path=video_path,
+        task_description=task_description,
+        task_specific_information=task_specific_information,
+        agent_config=agent_config,
+        seed=winner.seed,
+    )
+
+    feedback = vlm.send_input_to_vlm()
+    vlm.save_vlm_feedback(feedback, os.path.dirname(winner.summary_path))  # Save feedback to the same directory as training_summary.txt
+    return feedback
+
 
 
 def run_refinement(settings, task_cfg, refine_cfg):
@@ -217,11 +281,18 @@ def run_refinement(settings, task_cfg, refine_cfg):
         if warm_start and winner.checkpoint_path:
             warm_start_checkpoint = winner.checkpoint_path
 
+        # --- VLM feedback phase: send the best candidate's video to VLM -----
+        vlm_feedback = get_vlm_feedback(evaluator, winner, task_cfg, refine_cfg)
+        if vlm_feedback:
+            logger.info(f"VLM feedback received:\n{vlm_feedback}")
+        else:
+            logger.info("No VLM feedback received.")
+
         # --- Feedback phase: fold the outcome back into the conversation -----
         # Today only the winner is fed back; because the history retains every
         # candidate with its summary, feeding the whole batch back later is just
         # a different read of `run_records` — no structural change needed.
-        feedback = agent.receive_feedback(best.raw_response, summary_path=summary_path)
+        feedback = agent.receive_feedback(best.raw_response, summary_path=summary_path, vlm_feedback=vlm_feedback)
         history.update(best, feedback_text=feedback)
         history.save_json()
 
@@ -246,6 +317,8 @@ def main():
                         help="Resume each iteration from the previous iteration's "
                              "de-noised winner instead of random weights (default: "
                              "false, or refineconfig.yaml's warm_start).")
+    parser.add_argument("--vlm", action="store_true", 
+                        help="Use VLM for refinement")
     args = parser.parse_args()
 
     settings = load_yaml_config(args.settings)
@@ -259,6 +332,8 @@ def main():
         refine_cfg = load_yaml_config(args.refineconfig)
         if args.warm_start:
             refine_cfg["warm_start"] = True
+        if args.vlm:
+            refine_cfg["vlm_feedback"] = True
         run_refinement(settings, task_cfg, refine_cfg)
     else:
         parser.print_help()

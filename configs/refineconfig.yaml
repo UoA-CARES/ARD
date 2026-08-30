@@ -1,9 +1,10 @@
 # Eureka refinement parameters
 iteration: 10    # how many refinement iterations to run
-num_eval: 1   # times the best reward is re-trained to score it (the eval phase)
+num_eval: 5   # times the best reward is re-trained to score it (the eval phase)
 base_seed: 42   # eval-phase seeds are base_seed + k + 1 (passed to each job as env SEED -> train.py --seed)
 max_workers: 48
 warm_start: False  # resume each iteration's jobs from the previous iteration's best checkpoint (cold start on iteration 1)
+vlm_feedback: True # whether to use VLM Critic for refinement (set to false to skip VLM Critic)
 
 # Eureka agent (LLM) settings
 agent:
@@ -12,7 +13,7 @@ agent:
 # anthropic/claude-sonnet-4.5
   model: "qwen/qwen3-coder-30b-a3b-instruct"   #  "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
   base_url: "https://openrouter.ai/api/v1"
-  sample: 2        # reward candidates generated per iteration (the run phase)
+  sample: 10        # reward candidates generated per iteration (the run phase)
   temperature: 1.0  # LLM sampling temperature (raised for exploration variety)
   top_p: 0.95       # nucleus sampling; <1.0 widens the candidate distribution
   # Each candidate also gets a distinct sampler seed to diversify the batch beyond
@@ -30,15 +31,13 @@ vlm:
   frequency_penalty: 0.2    # Occassionally the vlm would repeat the same things over and over so this is to limit that
 
   # video recording settings
-  video_length: 4 #  # length of the video clip to record for evaluation (in seconds)
-  camera_angle: 0 # 0: default (isometric facing right), 1: opposite (isometric facing left), 2: front, "top_view": top down view  
-  enable_recording: true # whether to record videos for evaluation (set to false to skip video recording) 
-
-  prompt_file: "src/vlm/vlm_critic.txt"  # path to the prompt file for the VLM Critic agent
+  as_images: true      # whether to slice the video into frames and pass them to the VLMFeedbackAgent (true : false)
+  video_length: 4       # length of the video clip to record for evaluation (in seconds)
+  sample_rate: 8        # sample rate for video recording (frames per second)
+  frame_cap: 1000       # maximum number of frames to process (to avoid excessive memory usage)    
+  camera_angle: 0       # 0: default (isometric facing right), 1: opposite (isometric facing left), 2: front, 3: top down view  
 
   logging:
     jsonl_enabled: true
-    #jsonl_path_template: "./runs/{task_name}/{eval_id}/logs/rl_games/{robot_name}/{date_time}/training_record/vlm_feedback_{view_name}.jsonl"
-    #debug_tokens: true  # log the token cost and if a response was truncated
 
 

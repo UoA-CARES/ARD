@@ -209,3 +209,6 @@ __marimo__/
 
 runs
 *.zip
+
+CLAUDE.md
+test_eval.py

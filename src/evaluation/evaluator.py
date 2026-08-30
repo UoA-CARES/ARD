@@ -143,6 +143,22 @@ class RewardEvaluator:
                 f"max_runtime={self.max_runtime_hours}h scheduler={health} "
                 f"(build+push per candidate, submit-all, monitor concurrently)"
             )
+
+            # Set up a local runner for recording videos, since the HPC backend cannot render videos.
+            self.local_runner = LocalRunner(
+                image=runner.get("image", "ard-local"),
+                use_gpu=self.use_gpu,
+            )
+            if not self.local_runner.healthz():
+                logger.warning(
+                    "local docker did not pass health check; runs may fail."
+                )
+            logger.info(
+                f"RewardEvaluator ready: task={task} backend=local docker "
+                f"gpu={'on' if self.use_gpu else 'off'} timeout={self.timeout_seconds}s "
+                f"(deploy-by-Dockerfile, env-driven)"
+            )
+
         else:
             # Build + run each job's Dockerfile on the local machine, one at a time.
             self.runner = LocalRunner(
@@ -288,7 +304,7 @@ class RewardEvaluator:
         return command
 
     def _build_play_hpc_command(
-        self, seed: Optional[int]
+        self, seed: Optional[int] = None, video_length: Optional[int] = None
     ) -> str:
         """Build the ``hpc_entrypoint.sh`` command for one job
 
@@ -301,6 +317,8 @@ class RewardEvaluator:
         flags = ["play", "--task", self.task]
         if seed is not None:
             flags += ["--seed", str(seed)]
+        if video_length is not None:
+            flags += ["--video_length", str(video_length)]
         flags += ["--video"]
         flags += ["--num_envs", "1"]                 # Will always be 1 for play.py, since we only want to generate one set of videos per candidate
         flags += ["--headless"]                      # Play.py should always be headless, since we don't want to render the environment for play.py  
@@ -367,7 +385,6 @@ class RewardEvaluator:
         self, 
         record: RewardRecord,  
     ) -> Optional[list[str]]:
-
         """Record videos for a candidate record using play.py.
         
         Used either for hpc or local backend. Local backend is yet to be implemented, but the hpc backend is implemented in this method.
@@ -383,10 +400,14 @@ class RewardEvaluator:
             return []
 
         try:
-            if self.backend == "hpc":
-                return self._record_videos_hpc(record)
-            else:
-                raise NotImplementedError("Video recording for local backend is not implemented")
+            # if self.backend == "hpc":
+            #     return self._record_videos_hpc(record)
+            # else:
+            #     return self._record_videos_local(record)
+
+            # For now, we need to decouple self.backend from the method as video rendering does not work on the HPC backend.
+            # So recording will be done locally, then the videos will be uploaded to the HPC backend for evaluation.
+            return self._record_videos_local(record)
         except KeyboardInterrupt:
             # Manual kill (Ctrl-C): stop whatever the backend left running so we
             # don't strand a training container (local) or cluster jobs (hpc),
@@ -444,6 +465,83 @@ class RewardEvaluator:
             record.checkpoint_path = captured.checkpoint_path
 
         return records
+
+    def _record_videos_local(
+        self,
+        record: RewardRecord,
+    ) -> Optional[list[str]]:
+        """Record videos for a candidate record using play.py on the local backend.
+        
+        This method runs the play.py script in a local docker container, and saves the videos to the output directory.
+        """
+
+        # Check if the record has a valid checkpoint path to use for video recording
+        if not record.checkpoint_path:
+            logger.error(f"[{record.tag}] No checkpoint path provided for video recording")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = "no checkpoint path provided for video recording"
+            return []
+
+        # Check if the record has a valid reward method to use for video recording
+        if not record.has_method:
+            logger.error(f"[{record.tag}] No reward method provided for video recording")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = "no reward method provided for video recording"
+            return []
+
+        # Point output to the same directory as the checkpoint, so the videos are collected in the same place
+        tag = record.tag
+        work_dir = os.path.join(self.output_dir, tag)
+
+        # Reset execution tracking fields only (do NOT wipe record metrics)
+        record.job_id = None
+        record.eval_error = None
+        record.status = STATUS_PENDING
+
+        # --- Phase A: Submit candidate for recording
+        try:
+            tarball = self.workspace.build_codebase(
+                record.reward_method, tag, record.checkpoint_path
+            )
+        except RewardInjectionError as e:
+            logger.error(f"[{tag}] reward injection failed: {e}")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = f"injection: {e}"
+            return []
+
+        result = self.local_runner.run(
+            tarball_path=tarball,
+            work_dir=work_dir,
+            env={"OUTPUT_DIR": "/work"},
+            command=self._build_play_hpc_command(seed=record.seed, video_length=record.video_length),
+            build_args=self.build_args,
+            timeout_seconds=self.timeout_seconds,
+            wipe_work_dir=False,                    
+        )
+
+        # Check the result of the video recording run
+        record.status = result.status
+        if result.status != "succeeded":
+            record.eval_error = result.error or result.status
+            return []
+                
+                
+        # Check for video artifacts
+        run_dir = os.path.join(work_dir, "logs", "rl_games","play")
+        videos = self.processor.find_videos(run_dir)
+        if not videos:
+            logger.error(f"[{record.tag}] No videos found in {run_dir}")
+            record.status = "failed"
+            record.eval_error = "no videos found"
+            return []
+
+        record.status = "succeeded"
+        logger.info(f"[{tag}] Successfully generated videos in: {videos}")
+
+        # Return the list of string paths to the video directories
+        return videos
+
+        
 
     # ------------------------------------------------------------- hpc backend
     def _evaluate_hpc(
@@ -577,7 +675,7 @@ class RewardEvaluator:
         """ Submit the best reward candidate for video recording using play.py on the HPC backend.
             Monitors the job and collects the videos once the job is completed.
 
-            Returns the path to the directory containing the recorded videos, or None if the recording failed.
+            Returns a list of paths for the recorded videos, or None if the recording failed.
         """
 
         # Check if the record has a valid checkpoint path to use for video recording
@@ -618,7 +716,7 @@ class RewardEvaluator:
             job = self.runner.submit(
                 tarball_path=tarball,
                 tag=tag,
-                command=self._build_play_hpc_command(record.seed),
+                command=self._build_play_hpc_command(seed=record.seed, video_length=record.video_length),
                 max_runtime_hours=self.max_runtime_hours,
                 datasets=self.datasets,
                 job_name=f"{self.job_name_prefix}_{tag}",

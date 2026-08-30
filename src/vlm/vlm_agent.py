@@ -47,7 +47,7 @@ class VLMFeedbackAgent:
 
     def _init_sys_message(self):
         """
-        Initialise system message for the VLM model based on the task description.
+        Initialise system message for the VLM model. 
         """
         system_prompt_path = os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
         with open(system_prompt_path, "r") as f:
@@ -113,7 +113,8 @@ class VLMFeedbackAgent:
 
     def _build_messages(self, content_items: list[dict]) -> list[dict]:
         """
-        Builds a list of messages for the VLM model based on the provided content items.
+        Builds a list of messages for the VLM model based on the task description + provided content items.
+
         """
         content = [{"type": "text", 
                     "text": self.task_description}] + content_items

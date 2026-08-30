@@ -35,6 +35,7 @@ TENSORBOARD_SIZE_GUIDANCE = {
 # Per-run record subdirectory and summary filename.
 TRAINING_RECORD_DIR = "training_record"
 TRAINING_SUMMARY_FILE = "training_summary.txt"
+VLM_FEEDBACK_FILE = "vlm_feedback.txt"
 
 # --------------------------------------------------------------------------- #
 # Warm-start checkpoint delivery                                              #

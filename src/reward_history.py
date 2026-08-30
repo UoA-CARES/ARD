@@ -59,6 +59,7 @@ class RewardRecord:
     phase: str                           # "run" (exploration) | "eval" (scoring)
     tag: str                             # unique label, e.g. "iter1_run_0"
     seed: Optional[int] = None           # training seed, if pinned
+    video_length: Optional[int] = None      # length of the recorded videos (play.py output)
 
     # --- generation (LLM) ---------------------------------------------------
     model: Optional[str] = None
