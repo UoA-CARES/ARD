@@ -44,8 +44,8 @@ runner:
   # translates MAX_ITERATIONS/NUM_ENVS into --max_iterations/--num_envs command
   # flags instead (WANDB_* cannot be forwarded to hpc jobs — they'd leak the key).
   # Smoke-test setting: cap PPO iterations so each job finishes quickly.
-  env:
-    MAX_ITERATIONS: "100"    # PPO iterations (--max_iterations) — clears shadow_hand's save_best_after:100 with margin
+  # env:
+  #   MAX_ITERATIONS: "100"    # PPO iterations (--max_iterations) — clears shadow_hand's save_best_after:100 with margin
   #   NUM_ENVS: "2048"        # parallel envs (--num_envs) — scaled down from the task's default 8192; must be a
     # multiple of 2048 for shadow_hand specifically (batch_size = num_envs * horizon_length(16) must divide
     # evenly into minibatch_size(32768) per its rl_games_ppo_cfg.yaml, unlike cartpole which tolerated 1024)
