@@ -99,6 +99,36 @@ class FitnessScorer:
         return best
 
     @staticmethod
+    def select_top_k(records: List, k: int) -> List:
+        """
+        Mark and return the ``k`` highest-fitness records in ``records``.
+
+        This is the pool the next iteration breeds from, and it replaces Eureka's
+        greedy "keep only the batch winner" step. Pass the *current pool plus the
+        new batch* so a parent stays in the running against its own children: the
+        pool's fitness can then never regress, which a greedy hand-off allows
+        whenever a whole batch scores below its parent.
+
+        Ranks only records with a finite fitness (successfully trained and
+        scored), so failed jobs can never occupy a parent slot. ``survived`` is
+        sticky — set here and never cleared — so the persisted history records
+        which candidates were ever parents, not just who is in the pool right
+        now. ``k`` of 1 reproduces the greedy single-parent loop.
+        """
+        scored = [r for r in records if isfinite(r.fitness)]
+        if not scored:
+            logger.warning("No scored candidates to form a pool from")
+            return []
+        top = sorted(scored, key=lambda r: r.fitness, reverse=True)[: max(1, k)]
+        for r in top:
+            r.survived = True
+        logger.info(
+            f"Pool of {len(top)}: "
+            + ", ".join(f"{r.tag}={r.fitness:.4f}" for r in top)
+        )
+        return top
+
+    @staticmethod
     def summarise(records: List) -> Tuple[List[float], float, float]:
         """
         Return ``(values, mean, std)`` over ``records`` — one reward's eval seeds.

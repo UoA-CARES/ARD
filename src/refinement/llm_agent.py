@@ -94,6 +94,25 @@ class EurekaAgent:
             The exact feedback message text appended to the conversation (so the
             caller can record what was sent back to the LLM).
         """
+        feedback_content = self._feedback_content(summary_path)
+
+        assistant_msg = {"role": "assistant", "content": best_response_text}
+        user_msg = {"role": "user", "content": feedback_content}
+        if len(self.messages) == 2:
+            self.messages += [assistant_msg, user_msg]
+        else:
+            # Keep the window to system + initial-user + last assistant/user pair.
+            self.messages[-2] = assistant_msg
+            self.messages[-1] = user_msg
+        return feedback_content
+
+    def _feedback_content(self, summary_path: str = None) -> str:
+        """
+        Build the feedback message for one run's training summary.
+
+        ``summary_path`` of None (or a missing file) means that run produced no
+        usable training summary, which asks for a rewrite rather than a revision.
+        """
         if summary_path and os.path.exists(summary_path):
             with open(summary_path, "r") as f:
                 summary = f.read()
@@ -109,17 +128,34 @@ class EurekaAgent:
                 traceback_msg="No reward function trained successfully this "
                 "iteration. Rewrite an entirely new reward function."
             )
-        feedback_content += self.code_output_tip
+        return feedback_content + self.code_output_tip
 
-        assistant_msg = {"role": "assistant", "content": best_response_text}
-        user_msg = {"role": "user", "content": feedback_content}
-        if len(self.messages) == 2:
-            self.messages += [assistant_msg, user_msg]
-        else:
-            # Keep the window to system + initial-user + last assistant/user pair.
-            self.messages[-2] = assistant_msg
-            self.messages[-1] = user_msg
-        return feedback_content
+    def branch_messages(self, parent_response_text: str, summary_path: str = None):
+        """
+        Build a standalone conversation branch for one parent candidate.
+
+        Same shape as the conversation :meth:`receive_feedback` maintains — base
+        prompt, the parent's own code, that run's feedback — but returned as a
+        fresh list instead of mutating ``self.messages``. Each survivor in the
+        pool is improved in its own branch, so one parent's code and numbers
+        never leak into another parent's prompt; without that separation the
+        parents would collapse back into a single greedy conversation.
+
+        Args:
+            parent_response_text: Raw LLM response that produced this parent.
+            summary_path: Path to that parent's training_summary.txt, or None.
+
+        Returns:
+            ``(messages, feedback_text)`` — the branch to generate from, and the
+            exact feedback appended to it (so the caller can record what was
+            sent back to the LLM).
+        """
+        feedback_content = self._feedback_content(summary_path)
+        messages = self._init_messages() + [
+            {"role": "assistant", "content": parent_response_text},
+            {"role": "user", "content": feedback_content},
+        ]
+        return messages, feedback_content
 
     def func_gen(self, messages, seed=None):
         """

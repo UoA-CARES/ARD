@@ -59,6 +59,7 @@ class RewardRecord:
     phase: str                           # "run" (exploration) | "eval" (scoring)
     tag: str                             # unique label, e.g. "iter1_run_0"
     seed: Optional[int] = None           # training seed, if pinned
+    parent_tag: Optional[str] = None     # survivor whose branch produced this one
 
     # --- generation (LLM) ---------------------------------------------------
     model: Optional[str] = None
@@ -81,6 +82,7 @@ class RewardRecord:
     # --- judgement (fitness scorer) -----------------------------------------
     fitness: float = field(default_factory=lambda: float("-inf"))
     selected_best: bool = False          # chosen as the batch winner
+    survived: bool = False               # was ever kept in the top-K parent pool
     feedback_text: Optional[str] = None  # exact feedback sent to the LLM
 
     # --- bookkeeping --------------------------------------------------------

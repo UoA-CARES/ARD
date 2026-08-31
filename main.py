@@ -6,8 +6,9 @@ Stage 2 — Automated reward refinement (Eureka-style):
   1. An LLM proposes complete `_get_rewards` methods for an ard-isaaclab-tasks env.
   2. Each candidate is spliced into a fresh copy of the task repo (AST injection)
      and built + run as a local docker job (PPO / rl_games), one at a time.
-  3. Finished jobs are scored by the task's fixed `fitness_function` metric; the
-     best candidate's training summary is fed back to the LLM for the next round.
+  3. Finished jobs are scored by the task's fixed `fitness_function` metric. The
+     top `survivors` candidates (pool + batch) become the next round's parents,
+     each improved in its own conversation branch from its own training summary.
   4. After the search loop, the best candidate of the whole run is re-trained on
      `num_eval` seeds once, and reported as mean +/- std over those seeds.
 
@@ -115,6 +116,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
     iterations = int(refine_cfg.get("iteration", 1))
     num_eval = int(refine_cfg.get("num_eval", 1))
     base_seed = int(refine_cfg.get("base_seed", 0))
+    survivors = max(1, int(refine_cfg.get("survivors", 1)))
     max_workers = min(agent.samples, int(refine_cfg.get("max_workers", agent.samples)))
 
     # The single source of truth: every candidate's generation -> evaluation ->
@@ -122,24 +124,44 @@ def run_refinement(settings, task_cfg, refine_cfg):
     # the generation fan-out below can register records concurrently.
     history = RewardHistory(output_dir=output_dir)
 
+    # The top-K pool of parents carried between iterations. Empty for iteration
+    # 1, whose candidates are drawn from the base prompt and so have no parent.
+    pool = []
+
     for i in range(1, iterations + 1):
         logger.info(f"=== Refinement iteration {i}/{iterations} ===")
 
+        # --- Parent phase: one conversation branch per surviving candidate ---
+        # Each parent is improved in isolation, against its own code and its own
+        # training numbers. Building the branches here (once per iteration, off
+        # the thread pool) keeps the fan-out below read-only over shared state.
+        branches = []
+        for parent in pool:
+            messages, feedback = agent.branch_messages(
+                parent.raw_response, summary_path=parent.summary_path
+            )
+            history.update(parent, feedback_text=feedback)
+            branches.append((parent, messages))
+
         # --- Generation phase: propose a batch of candidates -----------------
         # func_gen is a network-bound LLM call, so fan the samples out across
-        # threads (the GIL is released during I/O). Threads only read
-        # agent.messages (mutated later by receive_feedback) and each registers
-        # its own record by index, so correctness no longer relies on ordering.
+        # threads (the GIL is released during I/O). Threads only read their
+        # branch's message list and each registers its own record by index, so
+        # correctness no longer relies on ordering.
         def _generate(k):
             tag = f"iter{i}_run_{k}"
+            # Round-robin over the parents, so the batch splits evenly between
+            # them and its size (the training cost) is unchanged by pooling.
+            parent, messages = branches[k % len(branches)] if branches else (None, agent.messages)
             # Distinct seed per candidate so the batch explores varied reward
             # designs instead of collapsing to one (identical prompts alone can
             # return identical completions under provider-side determinism).
             gen_seed = base_seed + i * 1000 + k
             try:
-                method, raw = agent.func_gen(agent.messages, seed=gen_seed)
+                method, raw = agent.func_gen(messages, seed=gen_seed)
                 history.new_record(
                     iteration=i, index=k, phase="run", tag=tag,
+                    parent_tag=parent.tag if parent else None,
                     model=agent.model, temperature=agent.temperature,
                     gen_seed=gen_seed,
                     reward_method=method, raw_response=raw, status=STATUS_GENERATED,
@@ -148,6 +170,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
                 logger.error(f"[{tag}] generation failed: {e}")
                 history.new_record(
                     iteration=i, index=k, phase="run", tag=tag,
+                    parent_tag=parent.tag if parent else None,
                     model=agent.model, temperature=agent.temperature,
                     gen_seed=gen_seed,
                     gen_error=str(e), status=STATUS_GEN_FAILED,
@@ -170,29 +193,34 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         if best is None:
             logger.error("No candidate trained successfully; requesting a rewrite")
-            seed_record = next((r for r in run_records if r.raw_response), None)
-            feedback = agent.receive_feedback(
-                seed_record.raw_response if seed_record else "", summary_path=None
-            )
-            if seed_record:
-                history.update(seed_record, feedback_text=feedback)
+            # An existing pool is untouched by a failed batch: its parents are
+            # still the best candidates seen, so the next iteration simply
+            # breeds from them again. Only a run that has never scored anything
+            # has no parent to fall back on, and needs the base conversation
+            # itself told to start over.
+            if not pool:
+                seed_record = next((r for r in run_records if r.raw_response), None)
+                feedback = agent.receive_feedback(
+                    seed_record.raw_response if seed_record else "", summary_path=None
+                )
+                if seed_record:
+                    history.update(seed_record, feedback_text=feedback)
             history.save_json()
             continue
 
         logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
 
-        # --- Feedback phase: fold the outcome back into the conversation -----
-        # The summary must come from the run that was scored: the LLM is shown
-        # its own code next to that same run's numbers. Pairing the code with a
-        # different training run (a re-train on another seed) would describe two
-        # different trajectories and make the reflection misleading.
-        # Today only the winner is fed back; because the history retains every
-        # candidate with its summary, feeding the whole batch back later is just
-        # a different read of `run_records` — no structural change needed.
-        feedback = agent.receive_feedback(
-            best.raw_response, summary_path=best.summary_path
-        )
-        history.update(best, feedback_text=feedback)
+        # --- Pool phase: survivors compete against their own children --------
+        # Eureka hands the single batch winner to the next iteration, which
+        # forces the search to accept a batch even when every candidate in it
+        # scored below the parent that produced them. Here the next parents are
+        # the top `survivors` of (current pool + this batch) instead, so a
+        # parent is only displaced by a child that actually beat it and the
+        # pool's fitness cannot regress. The feedback for each new parent is
+        # built at the top of the next iteration, one branch per parent, so the
+        # code shown to the LLM is always paired with its own run's numbers.
+        # `survivors: 1` collapses this back to the greedy loop exactly.
+        pool = scorer.select_top_k(pool + run_records, survivors)
         history.save_json()
 
     logger.info("Refinement loop complete")
