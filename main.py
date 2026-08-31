@@ -23,6 +23,7 @@ import os
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import yaml
 from tqdm import tqdm
@@ -91,8 +92,13 @@ def resolve_task_config(task_name, tasks_repo):
 def run_refinement(settings, task_cfg, refine_cfg):
     """Run the Eureka refinement loop for one task."""
     tasks_repo = settings["tasks_repo"]
+    # Timestamped per-execution directory: re-running a task must not delete the
+    # previous execution's logs/checkpoints (each job rmtree's its own work_dir)
+    # nor overwrite its reward_history.json.
     output_dir = os.path.join(
-        os.path.expanduser(settings.get("output_dir", "./runs")), task_cfg["task"]
+        os.path.expanduser(settings.get("output_dir", "./runs")),
+        task_cfg["task"],
+        datetime.now().strftime("%Y%m%d-%H%M%S"),
     )
 
     evaluator = RewardEvaluator(

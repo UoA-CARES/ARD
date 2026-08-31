@@ -33,7 +33,8 @@ change). Two other scheduler quirks shape the code:
 - **Outputs come back via the NAS.** Only `/workspace/output` is preserved, to
   `/cares-nas/hpc/outputs/<upi>/<job_id>` (mounted locally at `runner.hpc.nas_outputs`).
   The evaluator submits every candidate, polls each `job_id` until a terminal
-  status, then `collect`s `<nas_outputs>/<job_id>/` into `./runs/<task>/<tag>/`.
+  status, then `collect`s `<nas_outputs>/<job_id>/` into
+  `./runs/<task>/<timestamp>/<tag>/`.
 
 ## What changed from the old pipeline
 

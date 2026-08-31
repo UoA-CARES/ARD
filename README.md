@@ -148,7 +148,9 @@ The vision task does not run on the HPC backend yet (an RTX renderer issue on th
 
 ## Output
 
-Per task, under `output_dir/<task>/` (default `./runs/<task>/`):
+Per execution, under `output_dir/<task>/<timestamp>/` (default
+`./runs/<task>/<timestamp>/`, e.g. `20260831-142300`). Re-running a task writes a
+new timestamped directory, so earlier runs are never overwritten:
 
 - one directory per candidate, `<tag>/`, holding its `logs/` tree. The local backend writes here directly; the HPC backend copies the finished job's artifacts down from the NAS first. Either way, nothing is packed or re-downloaded once it lands.
 - per-run `training_record/training_summary.txt`, the scalar summary fed to the LLM.
