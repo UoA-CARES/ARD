@@ -24,6 +24,7 @@ import json
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import yaml
 from tqdm import tqdm
@@ -92,8 +93,13 @@ def resolve_task_config(task_name, tasks_repo):
 def run_refinement(settings, task_cfg, refine_cfg):
     """Run the Eureka refinement loop for one task."""
     tasks_repo = settings["tasks_repo"]
+    # Timestamped per-execution directory: re-running a task must not delete the
+    # previous execution's logs/checkpoints (each job rmtree's its own work_dir)
+    # nor overwrite its reward_history.json.
     output_dir = os.path.join(
-        os.path.expanduser(settings.get("output_dir", "./runs")), task_cfg["task"]
+        os.path.expanduser(settings.get("output_dir", "./runs")),
+        task_cfg["task"],
+        datetime.now().strftime("%Y%m%d-%H%M%S"),
     )
 
     evaluator = RewardEvaluator(
@@ -225,19 +231,48 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
 
-        # Carry this iteration's winning candidate into the next iteration.
+        # --- Eval phase: re-train the best reward num_eval times to score it --
+        # eval_records = [
+        #     history.new_record(
+        #         iteration=i, index=k, phase="eval", tag=f"iter{i}_eval_{k}",
+        #         seed=base_seed + k + 1, model=agent.model, temperature=agent.temperature,
+        #         reward_method=best.reward_method, raw_response=best.raw_response,
+        #         status=STATUS_GENERATED,
+        #     )
+        #     for k in range(num_eval)
+        # ]
+        # evaluator.evaluate(
+        #     eval_records,
+        #     checkpoint_path=warm_start_source.checkpoint_path if warm_start else None,
+        # )
+        # scorer.score_all(eval_records)
+        # best_eval = scorer.select_best(eval_records)
+        # best_eval = None
+        # winner = best_eval or best
+        # summary_path = winner.summary_path
+        # if best_eval:
+        #     logger.info(f"Eval fitness (best of {num_eval}): {best_eval.fitness:.4f}")
+
+        # Carry this iteration's winning checkpoint into the next iteration.
         if warm_start and best.checkpoint_path:
             warm_start_source = best
 
         # --- Feedback phase: fold the outcome back into the conversation -----
+        # The summary must come from the run that was scored: the LLM is shown
+        # its own code next to that same run's numbers. Pairing the code with a
+        # different training run (a re-train on another seed) would describe two
+        # different trajectories and make the reflection misleading.
         # Today only the winner is fed back; because the history retains every
         # candidate with its summary, feeding the whole batch back later is just
         # a different read of `run_records` — no structural change needed.
-        feedback = agent.receive_feedback(best.raw_response, summary_path=best.summary_path)
+        feedback = agent.receive_feedback(
+            best.raw_response, summary_path=best.summary_path
+        )
         history.update(best, feedback_text=feedback)
         history.save_json()
 
     logger.info("Refinement loop complete")
+
     # --- Eval phase: score the run's best reward over num_eval seeds ---------
     # Once, after the search, on the best candidate of *all* iterations. Running
     # it per iteration would spend the multi-seed budget re-training local bests

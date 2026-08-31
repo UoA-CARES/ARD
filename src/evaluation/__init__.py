@@ -22,7 +22,7 @@ Example:
     >>> from src.evaluation import RewardEvaluator, FitnessScorer
     >>> from src.reward_history import RewardHistory
     >>> evaluator = RewardEvaluator(
-    ...     tasks_repo="/home/lee/code/ard-isaaclab-tasks",
+    ...     tasks_repo="/path/to/ard-isaaclab-tasks",
     ...     env_file_rel="source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py",
     ...     task="Isaac-ARD-Cartpole-v0",
     ...     runner={"use_gpu": True},

@@ -16,7 +16,7 @@ tag. We reuse the exact ``.tar.gz`` :class:`WorkspaceManager` already builds for
 the local backend as the ``docker build`` context, tag it
 ``<registry>/<repo>:<tag>``, push it, and submit a job that pulls it. This is the
 path the prototype ``ard_iter1_run_1`` NAS job used
-(``image: …/cli797_ard-isaaclab:iter1_run_1``).
+(``image: …/<upi>_ard-isaaclab:iter1_run_1``).
 
 Config travels in the job ``command``, not ``env``. The CARES scheduler drops the
 job ``env`` block, so task/seed/tunables are packed into the
@@ -105,7 +105,8 @@ class HPCRunner:
 
     Args:
         registry: CARES container registry host, e.g. ``130.216.238.2:5500``.
-        image_repo: Image repository under the registry, e.g. ``cli797_ard-isaaclab``.
+        image_repo: Image repository under the registry, ``<upi>_ard-isaaclab``.
+            Defaults to the repo derived from $ARD_UPI (see ``config.hpc_image_repo``).
         nas_outputs: Local mount of the CARES NAS outputs share (``~/hpc_outputs``),
             under which each job's artifacts appear as ``<nas_outputs>/<job_id>``.
         max_active_jobs: Guard against the scheduler's active-job cap (default 50).
@@ -114,17 +115,17 @@ class HPCRunner:
     def __init__(
         self,
         registry: str = config.DEFAULT_HPC_REGISTRY,
-        image_repo: str = config.DEFAULT_HPC_IMAGE_REPO,
+        image_repo: Optional[str] = None,
         nas_outputs: str = config.DEFAULT_HPC_NAS_OUTPUTS,
         max_active_jobs: int = config.DEFAULT_HPC_MAX_ACTIVE_JOBS,
     ):
         if HPCClient is None:
             raise HPCRunnerError(
                 "hpc_client is not installed. Install the HPC client into this "
-                "interpreter, e.g.:\n    pip install -e /home/lee/hpc-client"
+                "interpreter, e.g.:\n    pip install -e <path-to>/hpc-client"
             )
         self.registry = registry.rstrip("/")
-        self.image_repo = image_repo
+        self.image_repo = image_repo or config.hpc_image_repo()
         self.nas_outputs = os.path.abspath(os.path.expanduser(nas_outputs))
         self.max_active_jobs = int(max_active_jobs)
         # Job ids submitted this session that are still outstanding; poll() drops
