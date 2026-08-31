@@ -78,6 +78,7 @@ class RewardRecord:
     tb_path: Optional[str] = None        # TensorBoard event file
     summary_path: Optional[str] = None   # human-readable scalar summary
     checkpoint_path: Optional[str] = None  # saved policy checkpoint (rl_games .pth)
+    warm_started_from: Optional[str] = None  # tag of the candidate this run resumed from, if any
 
     # --- judgement (fitness scorer) -----------------------------------------
     fitness: float = field(default_factory=lambda: float("-inf"))
