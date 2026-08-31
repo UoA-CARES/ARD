@@ -20,6 +20,7 @@ Usage:
 """
 
 import os
+import json
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -118,9 +119,27 @@ def run_refinement(settings, task_cfg, refine_cfg):
     max_workers = min(agent.samples, int(refine_cfg.get("max_workers", agent.samples)))
     warm_start = bool(refine_cfg.get("warm_start", False))
 
-    # Checkpoint of the previous iteration's best candidate; None means cold
-    # start (always true for iteration 1, since there is no previous best yet).
-    warm_start_checkpoint = None
+    # The previous iteration's winning candidate, whose checkpoint the next
+    # iteration resumes from; None means cold start (always true for
+    # iteration 1, since there is no previous best yet). Kept as the actual
+    # record (not just its checkpoint path) so the log line and the
+    # `warm_started_from` field persisted onto each new candidate both name
+    # the exact source candidate — needed to verify, after the fact, that
+    # warm-starting picked up the candidate and checkpoint it should have.
+    warm_start_source = None
+
+    # A dedicated, append-only audit trail of every warm-start decision, kept
+    # separate from reward_history.json so "who was warm-started from whom"
+    # can be checked at a glance without cross-referencing every candidate's
+    # own record. Written to warm_start_history.json (see save_warm_start_log).
+    warm_start_log = []
+
+    def save_warm_start_log():
+        path = os.path.join(output_dir, "warm_start_history.json")
+        os.makedirs(output_dir, exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(warm_start_log, fh, indent=2)
+        return path
 
     # The single source of truth: every candidate's generation -> evaluation ->
     # judgement -> feedback lifecycle is recorded here, and it is thread-safe so
@@ -169,11 +188,26 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         # --- Run phase: dispatch + capture (evaluator), then judge (scorer) --
         logger.info(f"Evaluating {sum(r.has_method for r in run_records)} candidate(s)")
-        if warm_start and warm_start_checkpoint:
-            logger.info(f"Warm-starting from {warm_start_checkpoint}")
+        if warm_start and warm_start_source:
+            logger.info(
+                f"Warm-starting from {warm_start_source.tag} "
+                f"(fitness={warm_start_source.fitness:.4f}): "
+                f"{warm_start_source.checkpoint_path}"
+            )
+            for r in run_records:
+                history.update(r, warm_started_from=warm_start_source.tag)
+            warm_start_log.append({
+                "iteration": i,
+                "source_tag": warm_start_source.tag,
+                "source_iteration": warm_start_source.iteration,
+                "source_fitness": warm_start_source.fitness,
+                "checkpoint_path": warm_start_source.checkpoint_path,
+                "applied_to": [r.tag for r in run_records],
+            })
+            save_warm_start_log()
         evaluator.evaluate(
             run_records,
-            checkpoint_path=warm_start_checkpoint if warm_start else None,
+            checkpoint_path=warm_start_source.checkpoint_path if warm_start and warm_start_source else None,
         )
         scorer.score_all(run_records)
         best = scorer.select_best(run_records)
@@ -191,9 +225,9 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
 
-        # Carry this iteration's winning checkpoint into the next iteration.
+        # Carry this iteration's winning candidate into the next iteration.
         if warm_start and best.checkpoint_path:
-            warm_start_checkpoint = best.checkpoint_path
+            warm_start_source = best
 
         # --- Feedback phase: fold the outcome back into the conversation -----
         # Today only the winner is fed back; because the history retains every
