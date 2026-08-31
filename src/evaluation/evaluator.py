@@ -23,7 +23,10 @@ import os
 import time
 import shlex
 import shutil
+import pickle
 import logging
+import zipfile
+import collections
 from typing import Dict, List, Optional
 
 from .local_runner import LocalRunner
@@ -41,6 +44,57 @@ from src.reward_history import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class WarmStartError(RuntimeError):
+    """A warm-start checkpoint could not be used as specified."""
+
+
+# Classes the checkpoint reader below will reconstruct for real. Everything else
+# in the pickle — torch tensors, storages, custom classes — becomes `_Opaque`.
+# The containers have to be genuine: the unpickler fills them with SETITEM /
+# APPEND opcodes, which a stub can't accept ("does not support item assignment").
+_SAFE_CLASSES = {
+    ("collections", "OrderedDict"): collections.OrderedDict,
+    ("builtins", "dict"): dict,
+    ("builtins", "list"): list,
+    ("builtins", "tuple"): tuple,
+    ("builtins", "set"): set,
+    ("builtins", "frozenset"): frozenset,
+    ("builtins", "int"): int,
+    ("builtins", "float"): float,
+    ("builtins", "complex"): complex,
+    ("builtins", "bool"): bool,
+    ("builtins", "str"): str,
+    ("builtins", "bytes"): bytes,
+    ("builtins", "object"): object,
+}
+
+
+class _Opaque:
+    """Stand-in for any object the checkpoint reader declines to build."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __setstate__(self, state):
+        pass
+
+
+class _StubUnpickler(pickle.Unpickler):
+    """Unpickler that recovers a checkpoint's plain scalars and nothing else.
+
+    ``find_class`` never imports anything, so no code from the checkpoint can
+    execute — strictly safer than the ``torch.load(weights_only=False)`` this
+    replaced. ``persistent_load`` is how torch routes tensor storages; returning
+    a placeholder means the archive's multi-megabyte data entries are never read.
+    """
+
+    def find_class(self, module, name):
+        return _SAFE_CLASSES.get((module, name), _Opaque)
+
+    def persistent_load(self, pid):
+        return _Opaque()
 
 
 class RewardEvaluator:
@@ -103,6 +157,10 @@ class RewardEvaluator:
             build_root=build_root,
         )
         self.processor = ResultProcessor()
+        # Memoised checkpoint -> epoch reads. One warm-start checkpoint is shared
+        # by every candidate in a batch, so this saves reopening the archive once
+        # per record.
+        self._epoch_cache: Dict[str, int] = {}
 
         if self.backend == "hpc":
             # Build + push each candidate's image, submit to the CARES scheduler,
@@ -169,24 +227,62 @@ class RewardEvaluator:
 
     # ---------------------------------------------------------------- evaluate
     @staticmethod
-    def _checkpoint_epoch(checkpoint_path: str) -> Optional[int]:
+    def _checkpoint_epoch(checkpoint_path: str) -> int:
         """Read the epoch count rl_games saved inside a checkpoint.
 
         rl_games checkpoints bundle their own epoch counter alongside the
         weights (``a2c_common.py``: ``state['epoch'] = self.epoch_num`` on
         save, ``self.epoch_num = weights['epoch']`` on load) — loading a
-        checkpoint resumes the epoch count, not just the network. Returns
-        None (rather than raising) if the file can't be read, e.g. torch
-        isn't installed in this process — callers fall back to the
-        configured budget as-is.
+        checkpoint resumes the epoch count, not just the network.
+
+        Deliberately avoids ``torch.load``. torch is not an ARD dependency —
+        training runs inside the per-job Isaac Lab image, see requirements.txt —
+        and the earlier version of this that imported it lazily raised
+        ImportError on every single call, silently disabling the warm-start
+        budget extension below for a whole 5-iteration run. A ``torch.save``
+        file is just a zip archive whose ``*/data.pkl`` entry holds the state
+        dict's structure, with tensor payloads in separate entries reached via
+        ``persistent_load``, so the scalars are readable with the stdlib alone
+        and without materialising a single weight.
+
+        Raises:
+            WarmStartError: if the epoch can't be read. Never returns a
+                fallback — quietly submitting an unextended budget under-trains
+                every warm-started job in the batch, which is precisely the
+                failure this method exists to prevent.
         """
         try:
-            import torch
-            state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-            return int(state.get("epoch", 0))
+            if not os.path.isfile(checkpoint_path):
+                raise WarmStartError(f"{checkpoint_path} does not exist")
+            if not zipfile.is_zipfile(checkpoint_path):
+                raise WarmStartError(
+                    f"{checkpoint_path} is not a torch checkpoint archive"
+                )
+            with zipfile.ZipFile(checkpoint_path) as archive:
+                entries = [n for n in archive.namelist() if n.endswith("data.pkl")]
+                if not entries:
+                    raise WarmStartError(f"{checkpoint_path} contains no data.pkl")
+                with archive.open(entries[0]) as handle:
+                    state = _StubUnpickler(handle).load()
+        except WarmStartError:
+            raise
         except Exception as e:  # noqa: BLE001 - any read/unpickle failure
-            logger.warning(f"Could not read epoch count from {checkpoint_path}: {e}")
-            return None
+            raise WarmStartError(f"could not read {checkpoint_path}: {e}") from e
+
+        # Insist on the key rather than defaulting to 0: a missing 'epoch' would
+        # extend the ceiling by nothing and reproduce the original bug silently.
+        if not isinstance(state, dict) or "epoch" not in state:
+            found = sorted(state)[:10] if isinstance(state, dict) else type(state).__name__
+            raise WarmStartError(
+                f"{checkpoint_path} has no 'epoch' key (found: {found})"
+            )
+        return int(state["epoch"])
+
+    def _checkpoint_epoch_cached(self, checkpoint_path: str) -> int:
+        """``_checkpoint_epoch`` memoised for the life of this evaluator."""
+        if checkpoint_path not in self._epoch_cache:
+            self._epoch_cache[checkpoint_path] = self._checkpoint_epoch(checkpoint_path)
+        return self._epoch_cache[checkpoint_path]
 
     def _effective_max_iterations(self, checkpoint_path: Optional[str]) -> Optional[str]:
         """The ``--max_iterations`` value for one job, accounting for warm-start.
@@ -199,16 +295,18 @@ class RewardEvaluator:
         configured budget of *new* training on top of what it resumed from.
         Returns None if no ``MAX_ITERATIONS`` is configured at all (the task's
         own ``max_epochs`` default applies, unaffected by this).
+
+        Raises:
+            WarmStartError: propagated from :meth:`_checkpoint_epoch` when a
+                warm-start checkpoint's epoch can't be read. ``evaluate`` calls
+                this once up front so that surfaces before anything is built.
         """
         configured = self.env_extra.get("MAX_ITERATIONS")
         if configured is None:
             return None
         if not checkpoint_path:
             return str(configured)
-        epoch = self._checkpoint_epoch(checkpoint_path)
-        if epoch is None:
-            return str(configured)
-        return str(epoch + int(configured))
+        return str(self._checkpoint_epoch_cached(checkpoint_path) + int(configured))
 
     def _plasticity_enabled(self) -> bool:
         """Whether ``--plasticity`` should be appended to this job's training command.
@@ -349,6 +447,31 @@ class RewardEvaluator:
                     record.status = STATUS_BUILD_FAILED
                     record.eval_error = "workspace validation failed"
             return records
+
+        # Resolve the warm-start-adjusted epoch ceiling once, before anything is
+        # staged, built or pushed. `checkpoint_path` is batch-wide, so failing to
+        # read it is a batch-level condition, not a per-candidate one — and
+        # discovering it from inside _build_env/_build_hpc_command would strand
+        # images already pushed for earlier records. The log line is the
+        # observability this previously lacked: an unextended ceiling on a
+        # warm-started batch is now visible at submit time rather than only in a
+        # training log that stops after a handful of epochs.
+        try:
+            max_iterations = self._effective_max_iterations(checkpoint_path)
+        except WarmStartError as e:
+            logger.error(f"Warm start failed: {e}")
+            for record in records:
+                if record.has_method:
+                    record.status = STATUS_BUILD_FAILED
+                    record.eval_error = f"warm start: {e}"
+            return records
+        if checkpoint_path and max_iterations is not None:
+            logger.info(
+                f"Warm start: checkpoint at epoch "
+                f"{self._checkpoint_epoch_cached(checkpoint_path)} -> this batch "
+                f"trains to {max_iterations} "
+                f"(+{self.env_extra['MAX_ITERATIONS']})"
+            )
 
         try:
             if self.backend == "hpc":
