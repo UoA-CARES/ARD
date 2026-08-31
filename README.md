@@ -145,6 +145,31 @@ Per task, under `output_dir/<task>/` (default `./runs/<task>/`):
 - per-run `training_record/training_summary.txt`, the scalar summary fed to the LLM.
 - console logs reporting each iteration's best candidate and its fitness.
 
+### Sharing results
+
+A finished task folder is mostly rl_games `.pth` checkpoints — for Shadow Hand Repose, 13 GB of the 16 GB — which nobody reading the metrics needs. `scripts/get_run_metrics.py` zips a run folder without them:
+
+```bash
+# one candidate: writes iter4_run_6/iter4_run_6.zip (205 MB -> 8.7 MB)
+python scripts/get_run_metrics.py runs/Isaac-ARD-Repose-Cube-Shadow-Direct-v0/iter4_run_6
+# a whole task folder, somewhere else (16 GB -> ~700 MB)
+python scripts/get_run_metrics.py runs/Isaac-ARD-Repose-Cube-Shadow-Direct-v0 -o /tmp/shadow_hand.zip
+```
+
+Point it at either level — a task folder or a single candidate directory. By default the archive is written **inside that folder** as `<folder-name>.zip`, so it sits with the metrics it came from; `-o` puts it elsewhere. It keeps `status.json`, the hydra configs, `params/*.yaml`, `training_summary.txt`, container logs, and the TensorBoard event files, so the recipient can open the full training curves; it drops every `.pth`. Stdlib only, so it runs without ARD's dependencies installed.
+
+Existing `.zip` files are never packaged, so zipping a whole task folder won't swallow archives you made for individual candidates, and re-running with `--force` replaces an archive rather than nesting it.
+
+| Flag | Effect |
+|---|---|
+| `-o PATH` | Output zip, or a directory to write `<folder-name>.zip` into. Default is the run folder itself. |
+| `--force` | Overwrite an existing output file (otherwise it refuses). |
+| `--no-tfevents` | Also drop the TensorBoard event files. These are ~99% of what survives dropping `.pth`, so this turns a candidate's archive from 8.7 MB into ~114 KB of configs and logs. |
+| `--exclude GLOB` | Drop anything else matching the glob; repeatable. |
+| `--dry-run` | Report what would be packaged, and how much it saves, without writing. |
+
+Run `--dry-run` first on a whole task folder — the scan is quick, the write is not.
+
 ## Repository layout
 
 ```
@@ -158,6 +183,8 @@ src/
                                 HPC), stages per-candidate codebases, captures results
   refinement/
     llm_agent.py                EurekaAgent: proposes rewards, folds in feedback
+scripts/
+  get_run_metrics.py           zip a run folder for sharing, minus the .pth checkpoints
 ARCHITECTURE.md               design notes: execution, injection, fitness isolation
 ```
 
