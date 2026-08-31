@@ -89,13 +89,13 @@ def resolve_task_config(task_name, tasks_repo):
         f"No ard_meta.yaml for task '{task_name}' in {direct_root}. "
         f"Available: {available}"
     )
-def get_vlm_feedback(evaluator, winner, task_cfg, refine_cfg) -> Optional[str]:
+def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
     """
     Get feedback from the VLM module for the best reward candidate.
 
     Args:
         evaluator: The RewardEvaluator instance.
-        winner: The best candidate record from the refinement loop.
+        best: The best candidate record from the refinement loop.
         task_cfg: The task configuration dictionary.
         refine_cfg: The refinement configuration dictionary.
 
@@ -108,14 +108,16 @@ def get_vlm_feedback(evaluator, winner, task_cfg, refine_cfg) -> Optional[str]:
         return None
     agent_config=refine_cfg.get("vlm", {})
 
-    # Check if the winner has a valid summary path for feedback
-    if not winner.summary_path or not os.path.exists(winner.summary_path):
-        logger.warning("Winner's summary path is not available for VLM feedback.")
+    # Check if the best candidate has a valid summary path for feedback
+    if not best.summary_path or not os.path.exists(best.summary_path):
+        logger.warning("Best candidate's summary path is not available for VLM feedback.")
         return None
 
+    best.video_length = agent_config.get("video_length", 200)  # Default to 200 steps if not specified
+
     # Record the videos for the best candidate
-    video_paths = evaluator.record_videos(winner)
-    winner.video_paths = video_paths  # Store the recorded video paths in the winner record
+    video_paths = evaluator.record_videos(best)
+    best.video_paths = video_paths  # Store the recorded video paths in the best record
 
     # Get the task desc and any task-specific information for the VLM
     task_description = task_cfg["description"]
@@ -143,11 +145,11 @@ def get_vlm_feedback(evaluator, winner, task_cfg, refine_cfg) -> Optional[str]:
         task_description=task_description,
         task_specific_information=task_specific_information,
         agent_config=agent_config,
-        seed=winner.seed,
+        seed=best.seed,
     )
 
     feedback = vlm.send_input_to_vlm()
-    vlm.save_vlm_feedback(feedback, os.path.dirname(winner.summary_path))  # Save feedback to the same directory as training_summary.txt
+    vlm.save_vlm_feedback(feedback, os.path.dirname(best.summary_path))  # Save feedback to the same directory as training_summary.txt
     return feedback
 
 
@@ -255,48 +257,64 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
 
-        # --- Eval phase: re-train the best reward num_eval times to score it --
-        eval_records = [
-            history.new_record(
-                iteration=i, index=k, phase="eval", tag=f"iter{i}_eval_{k}",
-                seed=base_seed + k + 1, model=agent.model, temperature=agent.temperature,
-                reward_method=best.reward_method, raw_response=best.raw_response,
-                status=STATUS_GENERATED,
-            )
-            for k in range(num_eval)
-        ]
-        evaluator.evaluate(
-            eval_records,
-            checkpoint_path=warm_start_checkpoint if warm_start else None,
-        )
-        scorer.score_all(eval_records)
-        best_eval = scorer.select_best(eval_records)
-
-        winner = best_eval or best
-        summary_path = winner.summary_path
-        if best_eval:
-            logger.info(f"Eval fitness (best of {num_eval}): {best_eval.fitness:.4f}")
-
-        # Carry this iteration's winning checkpoint into the next iteration.
-        if warm_start and winner.checkpoint_path:
-            warm_start_checkpoint = winner.checkpoint_path
-
         # --- VLM feedback phase: send the best candidate's video to VLM -----
-        vlm_feedback = get_vlm_feedback(evaluator, winner, task_cfg, refine_cfg)
+        vlm_feedback = get_vlm_feedback(evaluator, best, task_cfg, refine_cfg)
         if vlm_feedback:
             logger.info(f"VLM feedback received:\n{vlm_feedback}")
         else:
             logger.info("No VLM feedback received.")
 
         # --- Feedback phase: fold the outcome back into the conversation -----
+        # The summary must come from the run that was scored: the LLM is shown
+        # its own code next to that same run's numbers. Pairing the code with a
+        # different training run (a re-train on another seed) would describe two
+        # different trajectories and make the reflection misleading.
         # Today only the winner is fed back; because the history retains every
         # candidate with its summary, feeding the whole batch back later is just
         # a different read of `run_records` — no structural change needed.
-        feedback = agent.receive_feedback(best.raw_response, summary_path=summary_path, vlm_feedback=vlm_feedback)
+        feedback = agent.receive_feedback(
+            best.raw_response, summary_path=best.summary_path, vlm_feedback=vlm_feedback
+        )
+        logger.info(f"Successfully merged feedback for candidate idx={best.index}")
         history.update(best, feedback_text=feedback)
         history.save_json()
 
     logger.info("Refinement loop complete")
+
+    # --- Eval phase: score the run's best reward over num_eval seeds ---------
+    # Once, after the search, on the best candidate of *all* iterations. Running
+    # it per iteration would spend the multi-seed budget re-training local bests
+    # that a later iteration discards, and still leave the final winner scored by
+    # a single seed. `select_best` over every run record marks that winner (and
+    # only it) as `selected_best` in the history.
+    best = scorer.select_best([r for r in history.all() if r.phase == "run"])
+    if best is None:
+        logger.error("No candidate trained successfully in any iteration; skipping eval")
+        return history
+
+    logger.info(
+        f"=== Eval phase: re-training {best.tag} (fitness {best.fitness:.4f}) "
+        f"on {num_eval} seed(s) ==="
+    )
+    eval_records = [
+        history.new_record(
+            iteration=best.iteration, index=k, phase="eval",
+            tag=f"{best.tag}_eval_{k}",
+            seed=base_seed + k + 1, model=best.model, temperature=best.temperature,
+            reward_method=best.reward_method, raw_response=best.raw_response,
+            status=STATUS_GENERATED,
+        )
+        for k in range(num_eval)
+    ]
+    evaluator.evaluate(eval_records)
+    scorer.score_all(eval_records)
+    values, mean, std = scorer.summarise(eval_records)
+    logger.info(
+        f"Eval fitness over {len(values)}/{num_eval} seed(s): "
+        f"mean={mean:.4f} std={std:.4f} "
+        f"[{', '.join(f'{v:.4f}' for v in values)}]"
+    )
+    history.save_json()
     return history
 
 
