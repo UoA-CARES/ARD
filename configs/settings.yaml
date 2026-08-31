@@ -4,7 +4,7 @@
 # Path to the ard-isaaclab-tasks checkout — the RL task substrate ARD trains
 # against. Each candidate reward is injected into a task env file inside a fresh
 # copy of this repo, packaged, and built + run locally as a docker job.
-tasks_repo: "/home/andrew/code/ard-isaaclab-tasks"
+tasks_repo: "/home/lee/code/ard-isaaclab-tasks"
 
 # Where ARD runs each candidate and keeps its logs. Every candidate's training
 # job runs in its own <output_dir>/<task>/<tag>/ directory (the container's /work
@@ -30,7 +30,7 @@ build_root: "./runs/_codebases"
 #                    CONCURRENTLY on the cluster. Artifacts land on the NAS and are
 #                    recycled into ./runs as each job finishes.
 runner:
-  backend: local            # local | hpc
+  backend: hpc            # local | hpc
 
   # --- local backend --------------------------------------------------------
   # Docker image repo (per-job tags are appended per candidate).
@@ -44,9 +44,9 @@ runner:
   # translates MAX_ITERATIONS/NUM_ENVS into --max_iterations/--num_envs command
   # flags instead (WANDB_* cannot be forwarded to hpc jobs — they'd leak the key).
   # Smoke-test setting: cap PPO iterations so each job finishes quickly.
-  env:
-    MAX_ITERATIONS: "300"    # PPO iterations (--max_iterations) — clears shadow_hand's save_best_after:100 with margin
-    NUM_ENVS: "2048"        # parallel envs (--num_envs) — scaled down from the task's default 8192; must be a
+  # env:
+  #   MAX_ITERATIONS: "300"    # PPO iterations (--max_iterations) — clears shadow_hand's save_best_after:100 with margin
+  #   NUM_ENVS: "2048"        # parallel envs (--num_envs) — scaled down from the task's default 8192; must be a
     # multiple of 2048 for shadow_hand specifically (batch_size = num_envs * horizon_length(16) must divide
     # evenly into minibatch_size(32768) per its rl_games_ppo_cfg.yaml, unlike cartpole which tolerated 1024)
   # Optional `docker build --build-arg` values (local backend):
@@ -57,14 +57,19 @@ runner:
 
   # --- hpc backend (used only when backend: hpc) ----------------------------
   # Prerequisites (one-off): the HPC client must be installed + logged in
-  #   pip install -e /home/lee/hpc-client
+  #   pip install -e <path-to>/hpc-client
   #   hpc-client configure --scheduler-url http://<scheduler-host>:8080
   #   hpc-client login <upi>              # or export HPC_PASSWORD for auto-relogin
   # and the CARES registry must be in Docker's insecure-registries (see
   # ard-isaaclab-tasks/scripts/hpc_push.sh) so `docker push` works.
   hpc:
     registry: "130.216.238.2:5500"       # CARES container registry
-    image_repo: "akoh751_ard-isaaclab"    # <registry>/<image_repo>:<candidate-tag>
+    upi: ""                              # YOUR UPI — namespaces the per-user image
+                                         # repo <upi>_ard-isaaclab and the NAS output
+                                         # path. Leave empty to take it from $ARD_UPI
+                                         # (keeps your UPI out of version control).
+    # image_repo: ""                     # raw override of <upi>_ard-isaaclab, if your
+                                         # registry repo has a non-standard name
     nas_outputs: "~/hpc_outputs"         # local mount of the NAS outputs share
     max_runtime_hours: 2.0               # per-job wall-clock cap the scheduler enforces
     poll_seconds: 30                     # how often the monitor loop polls each job
