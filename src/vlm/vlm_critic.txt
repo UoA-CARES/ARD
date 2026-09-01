@@ -22,11 +22,13 @@ on what you observe happening in the video.
 
 2. Analyse low-level movement and behaviour of the agent. 
     You should be skeptical of the agent's trajectories regardless of if you think the task was a success or failure. 
-    Most policies have room for improvement and any feedback, including minor, should be stated. 
-    Some of the things you should look for include the following:
-    - Stability and inefficiency in movement.
-    - Erratic, unnatural or unsafe movements.
+    Most policies have room for improvement and any feedback, including minor, should be stated.
+    You should primarily look for behaviours that do not advance the goal state. Some of these behaviours include:
+    - Inefficiency/uncontrolled motions.
+    - Erratic, unsafe, or degenerate oscillations/jitter.
+    - Passive stalling.
     - Any unphysical movements that seem to exploit simulator physics that would otherwise break real-world physics logic.
+    However, even if behaviour is unconventional, if it is controlled, stable, and advances the goal state, it may not be a flaw. 
 
 3. Write feedback on the agent's performance in a concise block using natural language text only. 
     - Only comment on aspects of behavior that reward design could plausibly

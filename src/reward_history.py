@@ -66,6 +66,7 @@ class RewardRecord:
     temperature: Optional[float] = None
     gen_seed: Optional[int] = None       # LLM sampler seed for this candidate
     raw_response: Optional[str] = None   # verbatim LLM completion
+    vlm_response: Optional[str] = None   # verbatim VLM feedback (if any)
     reward_method: Optional[str] = None  # extracted _get_rewards source
     gen_error: Optional[str] = None      # why generation failed, if it did
 

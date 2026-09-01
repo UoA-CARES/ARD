@@ -9,7 +9,9 @@ tasks_repo: "/home/andrew/ard-isaaclab-tasks"
 # Where ARD runs each candidate and keeps its logs. Every candidate's training
 # job runs in its own <output_dir>/<task>/<tag>/ directory (the container's /work
 # mount) and its logs / per-run records are read from there in place.
-output_dir: "./runs"
+output_dir: "./runs_no_vlm"
+# output_dir: "./runs_vlm_image"
+# output_dir: "./runs_vlm_video"
 
 # Where per-candidate codebases are staged before build/submit (a fresh copy of
 # tasks_repo with the proposed reward spliced in, plus its build-context tarball).
@@ -42,11 +44,11 @@ runner:
   # Extra container env applied to every job. On the local backend the entrypoint
   # reads these; on the hpc backend the scheduler DROPS the job env block, so ARD
   # translates MAX_ITERATIONS/NUM_ENVS into --max_iterations/--num_envs command
-  # flags instead (WANDB_* cannot be forwarded to hpc jobs — they'd leak the key).
+  # flags instead (WANDB_* caannot be forwarded to hpc jobs — they'd leak the key).
   # Smoke-test setting: cap PPO iterations so each job finishes quickly.
-  env:
-    MAX_ITERATIONS: "300"    # PPO iterations (--max_iterations) — clears shadow_hand's save_best_after:100 with margin
-    NUM_ENVS: "2048"        # parallel envs (--num_envs) — scaled down from the task's default 8192; must be a
+  # env:
+  #   MAX_ITERATIONS: "5000"    # PPO iterations (--max_iterations) — clears shadow_hand's save_best_after:100 with margin
+  #   NUM_ENVS: "2048"        # parallel envs (--num_envs) — scaled down from the task's default 8192; must be a
     # multiple of 2048 for shadow_hand specifically (batch_size = num_envs * horizon_length(16) must divide
     # evenly into minibatch_size(32768) per its rl_games_ppo_cfg.yaml, unlike cartpole which tolerated 1024)
   # Optional `docker build --build-arg` values (local backend):

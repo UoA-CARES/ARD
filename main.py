@@ -261,6 +261,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         vlm_feedback = get_vlm_feedback(evaluator, best, task_cfg, refine_cfg)
         if vlm_feedback:
             logger.info(f"VLM feedback received:\n{vlm_feedback}")
+            best.vlm_response = vlm_feedback  # Store the VLM feedback in the best record
         else:
             logger.info("No VLM feedback received.")
 
