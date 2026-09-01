@@ -310,8 +310,17 @@ def run_refinement(settings, task_cfg, refine_cfg):
     return history
 
 
-def main():
-    parser = argparse.ArgumentParser(description="ARD reward-refinement pipeline")
+def build_parser(add_help=True):
+    """The command line.
+
+    Factored out of main() so scripts/run_seeds.py can reuse this exact flag set
+    (as a `parents=` parser, hence `add_help`) and forward every one of these
+    flags to each per-seed main.py call — a new flag added here is picked up by
+    the sweep driver with no change on its side.
+    """
+    parser = argparse.ArgumentParser(
+        description="ARD reward-refinement pipeline", add_help=add_help
+    )
     parser.add_argument("--refine", action="store_true",
                         help="Run LLM-based reward-function refinement")
     parser.add_argument("--settings", type=str, default="configs/settings.yaml",
@@ -327,6 +336,11 @@ def main():
                         help="Resume each iteration from the previous iteration's "
                              "de-noised winner instead of random weights (default: "
                              "false, or refineconfig.yaml's warm_start).")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     settings = load_yaml_config(args.settings)

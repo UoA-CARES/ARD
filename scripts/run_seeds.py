@@ -5,22 +5,33 @@ Run the refinement pipeline several times, once per base seed.
 `main.py` takes no --seed flag: the seed comes from `base_seed` in
 configs/refineconfig.yaml, and the output location comes from `output_dir` in
 configs/settings.yaml. This driver therefore writes one throwaway copy of both
-configs per seed (under runs/_seed_sweep/seed_<seed>/) and calls main.py with
-them, so each run gets its own base_seed AND its own output tree. Without the
-separate output tree the runs would overwrite each other: candidate tags
+configs per seed (under runs/_seed_sweep/<task>/seed_<seed>/) and calls main.py
+with them, so each run gets its own base_seed AND its own output tree. Without
+the separate output tree the runs would overwrite each other: candidate tags
 (`iter1_run_0`, ...) and `reward_history.json` are identical between runs.
 
-Runs are sequential by default: on the hpc backend one run already fans
-`agent.sample` jobs out onto the scheduler at once.
+This script's flags ARE main.py's flags: it builds its parser from main.py's own
+`build_parser()`, so every main.py flag is accepted here and forwarded verbatim
+to every per-seed run, and a flag added to main.py later (--plasticity, ...)
+needs no change here. The only extras are the sweep's own --seeds / --sweep-dir /
+--dry-run / --stop-on-error. --settings and --refineconfig name the BASE configs
+that are copied per seed; the copies are what main.py actually receives.
+
+Nothing is defaulted: --task and --seeds must be passed, so what a sweep is
+running is never a guess.
+
+Runs are sequential: on the hpc backend one run already fans `agent.sample` jobs
+out onto the scheduler at once.
 
 Usage:
     export OPENROUTER_API_KEY=...
-    python scripts/run_seeds.py                       # seeds 42..46, shadow hand
-    python scripts/run_seeds.py --seeds 44 45 46      # resume a partial sweep
-    python scripts/run_seeds.py --task cartpole --dry-run
+    python scripts/run_seeds.py --refine --task Isaac-ARD-Repose-Cube-Shadow-Direct-v0 \
+        --seeds 42 43 44
+    python scripts/run_seeds.py --refine --task cartpole --seeds 42 --warm-start --dry-run
+    python scripts/run_seeds.py --refine --task shadow_hand --seeds 42 43 44 45 46 --warm-start
 
 Results land in <output_dir>/seed_<seed>/<task>/, console log per seed in
-runs/_seed_sweep/seed_<seed>/console.log.
+runs/_seed_sweep/<task>/seed_<seed>/console.log.
 """
 
 import os
@@ -35,13 +46,21 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TASK = "Isaac-ARD-Repose-Cube-Shadow-Direct-v0"
-DEFAULT_SEEDS = [50]
+sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from main import build_parser
+except ImportError as e:  # pragma: no cover - environment problem, not logic
+    sys.exit(
+        f"Cannot import main.py from {REPO_ROOT}: {e}\n"
+        "Run this from the ARD checkout with the pipeline's environment active."
+    )
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    force=True,  # importing main.py already called basicConfig; ours must win
 )
 logger = logging.getLogger("run_seeds")
 
@@ -81,14 +100,61 @@ def write_seed_configs(settings, refine_cfg, seed, sweep_dir):
     return settings_path, refine_path
 
 
-def run_one(task, settings_path, refine_path, log_path):
-    """Run main.py --refine for one seed, teeing its output to log_path."""
-    cmd = [
-        sys.executable, "-u", "main.py", "--refine",
-        "--task", task,
-        "--settings", str(settings_path),
-        "--refineconfig", str(refine_path),
-    ]
+def _long_option(action):
+    """The flag to emit for an action: its long form when it has one."""
+    return next(
+        (o for o in action.option_strings if o.startswith("--")),
+        action.option_strings[0],
+    )
+
+
+def build_main_cmd(main_actions, args, overrides):
+    """Rebuild main.py's argv from the flags we parsed with main.py's parser.
+
+    Driven off the parser's own actions rather than a hand-written list, so
+    whatever main.py accepts is what each seed gets. `overrides` replaces a
+    flag's value by dest — used to point --settings/--refineconfig at this
+    seed's config copies instead of the base ones the user named.
+
+    An action shape this doesn't know how to render raises rather than being
+    dropped: a silently missing flag would mean the sweep quietly ran a
+    different experiment than the same command line on main.py.
+    """
+    argv = [sys.executable, "-u", "main.py"]
+    for action in main_actions:
+        value = overrides.get(action.dest, getattr(args, action.dest, None))
+        flag = _long_option(action)
+
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction,
+                               argparse._StoreConstAction)):
+            # Flag-only: emit it exactly when it flips the default (a store_true
+            # left False, or a store_false left True, must stay off the command).
+            if value != action.default:
+                argv.append(flag)
+        elif isinstance(action, argparse._CountAction):
+            argv.extend([flag] * int(value or 0))
+        elif isinstance(action, argparse._AppendAction):
+            for item in value or []:
+                argv.extend([flag, str(item)])
+        elif isinstance(action, argparse._StoreAction):
+            if value is None:
+                continue  # an unset optional: let main.py apply its own default
+            if action.nargs in (None, "?"):
+                argv.extend([flag, str(value)])
+            else:  # "+", "*", or an int count
+                if not value:
+                    continue
+                argv.extend([flag, *(str(v) for v in value)])
+        else:
+            raise ValueError(
+                f"run_seeds cannot forward {flag} ({type(action).__name__}); "
+                "teach build_main_cmd how to render it."
+            )
+    return argv
+
+
+def run_one(cmd, log_path):
+    """Run one main.py invocation, teeing its output to log_path."""
     logger.info(f"$ {' '.join(cmd)}")
     with open(log_path, "w") as log:
         proc = subprocess.Popen(
@@ -102,26 +168,47 @@ def run_one(task, settings_path, refine_path, log_path):
         return proc.wait()
 
 
-def main():
+def build_arg_parser():
+    """main.py's parser plus the sweep's own flags.
+
+    Returns (parser, main_actions): `main_actions` is captured before the
+    sweep-only flags are added, so the split between "forward to main.py" and
+    "consumed here" keeps itself up to date as either side grows flags.
+    """
+    main_parser = build_parser(add_help=False)
+    main_actions = [a for a in main_parser._actions if a.option_strings]
+
+    # No default task: an experiment this long should never be a guess.
+    for action in main_actions:
+        if action.dest == "task":
+            action.required = True
+
     parser = argparse.ArgumentParser(
-        description="Run the ARD refinement pipeline once per base seed"
+        description="Run the ARD refinement pipeline once per base seed. Accepts "
+                    "every main.py flag and forwards it to each per-seed run; "
+                    "--settings/--refineconfig name the base configs copied per seed.",
+        parents=[main_parser],
     )
-    parser.add_argument("--seeds", type=int, nargs="+", default=DEFAULT_SEEDS,
-                        help=f"base seeds to run (default: {DEFAULT_SEEDS})")
-    parser.add_argument("--task", type=str, default=DEFAULT_TASK,
-                        help=f"task dir name or registered task ID (default: {DEFAULT_TASK})")
-    parser.add_argument("--settings", type=str, default="configs/settings.yaml",
-                        help="base settings YAML to copy per seed")
-    parser.add_argument("--refineconfig", type=str, default="configs/refineconfig.yaml",
-                        help="base refinement YAML to copy per seed")
+    parser.add_argument("--seeds", type=int, nargs="+", required=True,
+                        help="base seeds to run, e.g. --seeds 42 43 44")
     parser.add_argument("--sweep-dir", type=str, default="runs/_seed_sweep",
                         help="where per-seed configs and console logs are written")
     parser.add_argument("--dry-run", action="store_true",
                         help="write the per-seed configs and print the commands, run nothing")
     parser.add_argument("--stop-on-error", action="store_true",
                         help="stop the sweep if a seed fails (default: carry on)")
+    return parser, main_actions
+
+
+def main():
+    parser, main_actions = build_arg_parser()
     args = parser.parse_args()
 
+    if not args.refine:
+        parser.error(
+            "--refine is required: it is main.py's only mode, so without it every "
+            "seed would just print main.py's help"
+        )
     if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
         logger.error("OPENROUTER_API_KEY is not set")
         return 1
@@ -138,15 +225,17 @@ def main():
         )
         logger.info(f"=== Seed {seed} ({n}/{len(args.seeds)}) -> {seed_dir} ===")
 
+        cmd = build_main_cmd(main_actions, args, {
+            "settings": settings_path,
+            "refineconfig": refine_path,
+        })
+
         if args.dry_run:
-            logger.info(
-                f"[dry-run] python -u main.py --refine --task {args.task} "
-                f"--settings {settings_path} --refineconfig {refine_path}"
-            )
+            logger.info(f"[dry-run] $ {' '.join(cmd)}")
             continue
 
         started = time.time()
-        code = run_one(args.task, settings_path, refine_path, seed_dir / "console.log")
+        code = run_one(cmd, seed_dir / "console.log")
         elapsed = time.time() - started
         results.append((seed, code, elapsed))
         logger.info(
