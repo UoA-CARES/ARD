@@ -9,9 +9,7 @@ tasks_repo: "/home/andrew/ard-isaaclab-tasks"
 # Where ARD runs each candidate and keeps its logs. Every candidate's training
 # job runs in its own <output_dir>/<task>/<timestamp>/<tag>/ directory (the /work
 # mount) and its logs / per-run records are read from there in place.
-output_dir: "./runs_no_vlm"
-# output_dir: "./runs_vlm_image"
-# output_dir: "./runs_vlm_video"
+output_dir: "./runs"
 
 # Where per-candidate codebases are staged before build/submit (a fresh copy of
 # tasks_repo with the proposed reward spliced in, plus its build-context tarball).
