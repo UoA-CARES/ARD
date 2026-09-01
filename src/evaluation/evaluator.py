@@ -56,7 +56,7 @@ class RewardEvaluator:
             * ``local`` (default): use_gpu, timeout_seconds, image, env (extra
               container env passed to every job), build_args, and an optional
               command_template override. Jobs build + ``docker run`` one at a time.
-            * ``hpc``: an ``hpc`` sub-dict (registry, image_repo, nas_outputs,
+            * ``hpc``: an ``hpc`` sub-dict (registry, upi, nas_outputs,
               max_runtime_hours, datasets, poll_seconds, job_name_prefix,
               extra_args). Each candidate is built + pushed as its own image and
               submitted to the CARES HPC Scheduler; the batch trains concurrently.
@@ -111,7 +111,10 @@ class RewardEvaluator:
             hpc = dict(runner.get("hpc", {}))
             self.runner = HPCRunner(
                 registry=hpc.get("registry", config.DEFAULT_HPC_REGISTRY),
-                image_repo=hpc.get("image_repo", config.DEFAULT_HPC_IMAGE_REPO),
+                # Per-user image repo. `upi` (or $ARD_UPI) is the supported knob;
+                # `image_repo` stays as a raw override for a non-standard name.
+                image_repo=hpc.get("image_repo")
+                or config.hpc_image_repo(str(hpc.get("upi", "") or "")),
                 nas_outputs=hpc.get("nas_outputs", config.DEFAULT_HPC_NAS_OUTPUTS),
                 max_active_jobs=int(
                     hpc.get("max_active_jobs", config.DEFAULT_HPC_MAX_ACTIVE_JOBS)

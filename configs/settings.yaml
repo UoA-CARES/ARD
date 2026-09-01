@@ -7,7 +7,7 @@
 tasks_repo: "/home/andrew/ard-isaaclab-tasks"
 
 # Where ARD runs each candidate and keeps its logs. Every candidate's training
-# job runs in its own <output_dir>/<task>/<tag>/ directory (the container's /work
+# job runs in its own <output_dir>/<task>/<timestamp>/<tag>/ directory (the /work
 # mount) and its logs / per-run records are read from there in place.
 output_dir: "./runs_no_vlm"
 # output_dir: "./runs_vlm_image"
@@ -59,14 +59,19 @@ runner:
 
   # --- hpc backend (used only when backend: hpc) ----------------------------
   # Prerequisites (one-off): the HPC client must be installed + logged in
-  #   pip install -e /home/lee/hpc-client
+  #   pip install -e <path-to>/hpc-client
   #   hpc-client configure --scheduler-url http://<scheduler-host>:8080
   #   hpc-client login <upi>              # or export HPC_PASSWORD for auto-relogin
   # and the CARES registry must be in Docker's insecure-registries (see
   # ard-isaaclab-tasks/scripts/hpc_push.sh) so `docker push` works.
   hpc:
     registry: "130.216.238.2:5500"       # CARES container registry
-    image_repo: "akoh751_ard-isaaclab"    # <registry>/<image_repo>:<candidate-tag>
+    upi: ""                              # YOUR UPI — namespaces the per-user image
+                                         # repo <upi>_ard-isaaclab and the NAS output
+                                         # path. Leave empty to take it from $ARD_UPI
+                                         # (keeps your UPI out of version control).
+    # image_repo: ""                     # raw override of <upi>_ard-isaaclab, if your
+                                         # registry repo has a non-standard name
     nas_outputs: "~/hpc_outputs"         # local mount of the NAS outputs share
     max_runtime_hours: 2.0               # per-job wall-clock cap the scheduler enforces
     poll_seconds: 30                     # how often the monitor loop polls each job

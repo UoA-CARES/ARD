@@ -16,6 +16,19 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "justMyCode": false
+        },
+        {
+            "name": "Refine Isaac-ARD-Repose-Cube-Shadow-Direct-v0",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": [
+                "--refine", 
+                "--task", "Isaac-ARD-Repose-Cube-Shadow-Direct-v0"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
         }
     ]
 }

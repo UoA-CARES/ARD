@@ -5,6 +5,8 @@ Defaults for local evaluation of LLM-proposed reward functions against the
 ard-isaaclab-tasks substrate.
 """
 
+import os
+
 # Name of the method ARD rewrites in each task env file (the "sole edit target").
 REWARD_METHOD_NAME = "_get_rewards"
 
@@ -69,7 +71,32 @@ DEFAULT_BACKEND = "local"
 # is the image the submitted job pulls. Matches scripts/hpc_push.sh in
 # ard-isaaclab-tasks.
 DEFAULT_HPC_REGISTRY = "130.216.238.2:5500"
-DEFAULT_HPC_IMAGE_REPO = "akoh751_ard-isaaclab"
+
+# The image repository is per-user: ``<upi>_ard-isaaclab``. A UPI is a personal
+# account id, so it is NEVER hardcoded here — supply your own via
+# ``runner.hpc.upi`` in configs/settings.yaml, or by exporting $ARD_UPI.
+HPC_UPI_ENV_VAR = "ARD_UPI"
+HPC_IMAGE_REPO_SUFFIX = "ard-isaaclab"
+
+
+def hpc_image_repo(upi: str = "") -> str:
+    """Return the per-user image repo ``<upi>_ard-isaaclab``.
+
+    Args:
+        upi: The UPI to namespace the repository with. Falls back to $ARD_UPI.
+
+    Raises:
+        ValueError: If no UPI was configured, with the exact fix.
+    """
+    upi = (upi or os.environ.get(HPC_UPI_ENV_VAR, "")).strip()
+    if not upi:
+        raise ValueError(
+            "the hpc backend needs your UPI to name the container image "
+            "repository (<upi>_" + HPC_IMAGE_REPO_SUFFIX + "). Set "
+            "`runner.hpc.upi` in configs/settings.yaml, or export "
+            f"{HPC_UPI_ENV_VAR}=<upi>."
+        )
+    return f"{upi}_{HPC_IMAGE_REPO_SUFFIX}"
 
 # The in-image entrypoint every HPC job runs; ARD appends --task/--seed/… as
 # argv because the scheduler does NOT inject the job `env` block (see

@@ -74,6 +74,14 @@ Common to both backends:
 
   Also set `HPC_PASSWORD` so ARD can relogin automatically if this session expires mid-run; see [Secrets](#secrets) below.
 
+- **your UPI**, which names your per-user image repository on the registry
+  (`<upi>_ard-isaaclab`). Keep it out of version control by exporting it instead of
+  writing it into `configs/settings.yaml`:
+
+  ```bash
+  export ARD_UPI=<upi>
+  ```
+
 - the CARES registry trusted as an insecure registry so `docker push` works (see `ard-isaaclab-tasks/docs/HPC.md` for the one-time Docker config).
 
 ## Configuration
@@ -89,7 +97,7 @@ Three YAML files under `configs/`:
 `runner.backend` in `settings.yaml` picks how candidates train:
 
 - `local`: `use_gpu`, `timeout_seconds`, `image`, and optional `env` / `build_args` / `command_template`.
-- `hpc`: an `hpc` block with `registry`, `image_repo`, `nas_outputs`, `max_runtime_hours`, `poll_seconds`, `datasets`, `job_name_prefix`, `extra_args`.
+- `hpc`: an `hpc` block with `registry`, `upi` (yours; namespaces the `<upi>_ard-isaaclab` image repo — leave empty to read `$ARD_UPI`), `nas_outputs`, `max_runtime_hours`, `poll_seconds`, `datasets`, `job_name_prefix`, `extra_args`.
 
 See the comments in `configs/settings.yaml` for what each key does.
 
@@ -102,6 +110,7 @@ Secrets come from the environment, never the configs. Add them to your shell's s
 
    ```bash
    export OPENROUTER_API_KEY=...      # LLM key, required for every run
+   export ARD_UPI=...                 # HPC backend only, names your <upi>_ard-isaaclab image repo
    export HPC_PASSWORD=...            # HPC backend only, lets ARD relogin automatically
    ```
 
@@ -142,7 +151,9 @@ The vision task does not run on the HPC backend yet (an RTX renderer issue on th
 
 ## Output
 
-Per task, under `output_dir/<task>/` (default `./runs/<task>/`):
+Per execution, under `output_dir/<task>/<timestamp>/` (default
+`./runs/<task>/<timestamp>/`, e.g. `20260831-142300`). Re-running a task writes a
+new timestamped directory, so earlier runs are never overwritten:
 
 - one directory per candidate, `<tag>/`, holding its `logs/` tree. The local backend writes here directly; the HPC backend copies the finished job's artifacts down from the NAS first. Either way, nothing is packed or re-downloaded once it lands.
 - per-run `training_record/training_summary.txt`, the scalar summary fed to the LLM.

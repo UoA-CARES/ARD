@@ -33,7 +33,8 @@ change). Two other scheduler quirks shape the code:
 - **Outputs come back via the NAS.** Only `/workspace/output` is preserved, to
   `/cares-nas/hpc/outputs/<upi>/<job_id>` (mounted locally at `runner.hpc.nas_outputs`).
   The evaluator submits every candidate, polls each `job_id` until a terminal
-  status, then `collect`s `<nas_outputs>/<job_id>/` into `./runs/<task>/<tag>/`.
+  status, then `collect`s `<nas_outputs>/<job_id>/` into
+  `./runs/<task>/<timestamp>/<tag>/`.
 
 ## What changed from the old pipeline
 
@@ -129,7 +130,7 @@ continuous `--refine` invocation, not across separate runs.
 - `configs/settings.yaml` — `tasks_repo`, `output_dir`, and the `runner` block.
   `runner.backend` picks `local` (`use_gpu`, `timeout_seconds`, `image`, optional
   `env`/`build_args`/`command_template`; Dockerfile built locally, no prebuilt tag)
-  or `hpc` (a `runner.hpc` sub-block: `registry`, `image_repo`, `nas_outputs`,
+  or `hpc` (a `runner.hpc` sub-block: `registry`, `upi` (or `$ARD_UPI`), `nas_outputs`,
   `max_runtime_hours`, `poll_seconds`, `datasets`, …).
 - `configs/taskconfig.yaml` — `task`, `env_file` (the injection target), `description`, `max_iterations`.
 - `configs/refineconfig.yaml` — `iteration`, `num_eval`, `base_seed`, and the `agent` (LLM) block.

@@ -134,7 +134,7 @@ def slice_video_into_frames(video_path: str, output_dir: str, fps: int)-> list[s
 def main():
 
     # For easy copy paste
-    # /home/andrew/ard-isaaclab-tasks/logs/rl_games/shadow_hand/2026-07-28_13-56-38/videos/play/rl-video-step-0-camera_0.mp4
+    # <tasks-repo>/logs/rl_games/shadow_hand/2026-07-28_13-56-38/videos/play/rl-video-step-0-camera_0.mp4
 
     parser = argparse.ArgumentParser(description="VLM Test Script")
     parser.add_argument(
