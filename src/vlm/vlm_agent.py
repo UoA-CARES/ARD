@@ -23,6 +23,7 @@ class VLMFeedbackAgent:
         task_description: Natural-language description of the task goal.
         agent_config: {model, base_url, sample, temperature...}.
         system_prompt_path: Path to the system prompt file.
+        [Optional] system_prompt_path: Path to the system prompt file. If not provided, a default prompt will be used.
     """
 
     def __init__(
@@ -58,16 +59,16 @@ class VLMFeedbackAgent:
         with open(path, "r") as f:
             return [{"role": "system", "content": f.read()}]
 
-    def critique_video(self, video_path: str, seed: int = None) -> str:
+    def critique_video(self, video_path: str, seed: int = None, response_format: Optional[dict] = None) -> str:
         """
         Critiques a video and returns a natural language feedback.
         """
         video_content = self._build_video_content(video_path)
         messages = self._build_messages([video_content])
         logger.info("Video Critique requested. ")
-        return self._call_vlm(messages, seed=seed)
+        return self._call_vlm(messages, seed=seed, response_format=response_format)
 
-    def critique_images(self, frame_paths: list[str], seed: int = None) -> str:
+    def critique_images(self, frame_paths: list[str], seed: int = None, response_format: Optional[dict] = None) -> str:
         """
         Critiques a sequence of images and returns a natural language feedback.
         """
@@ -76,7 +77,7 @@ class VLMFeedbackAgent:
         image_content = self._build_image_content(frame_paths)
         messages = self._build_messages([sequence_note] + image_content)
         logger.info("Image Critique requested. ")
-        return self._call_vlm(messages, seed=seed)
+        return self._call_vlm(messages, seed=seed, response_format=response_format)
 
     def score(self, video_path: str, seed: int = None, is_video: bool = True) -> float:
         """
@@ -144,7 +145,7 @@ class VLMFeedbackAgent:
         return (sys_message or self.sys_message) + [{"role": "user", "content": content}]
 
 
-    def _call_vlm(self, messages: list[dict], seed: int = None) -> str:
+    def _call_vlm(self, messages: list[dict], seed: int = None, response_format: Optional[dict] = None) -> str:
         """
         VLM API call
         """
@@ -152,6 +153,9 @@ class VLMFeedbackAgent:
 
         for attempt in range(max_retries):
             try:
+                kwargs = {}
+                if response_format:
+                    kwargs["response_format"] = response_format
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -159,7 +163,8 @@ class VLMFeedbackAgent:
                     max_tokens=self.max_output_tokens,
                     timeout=self.timeout_seconds,
                     seed=seed,
-                    frequency_penalty=self.frequency_penalty
+                    frequency_penalty=self.frequency_penalty,
+                    **kwargs,
                 )
                 feedback = response.choices[0].message.content
                 if feedback is not None:
