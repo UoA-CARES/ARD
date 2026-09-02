@@ -10,6 +10,7 @@ import os
 import logging
 import base64
 
+from typing import Optional
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -45,13 +46,18 @@ class VLMFeedbackAgent:
 
         self.sys_message = self._init_sys_message()
 
-    def _init_sys_message(self):
+    def _init_sys_message(self, sys_prompt_path: Optional[str] = None) -> list[dict]:
         """
         Initialise system message for the VLM model. 
         """
-        system_prompt_path = os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
-        with open(system_prompt_path, "r") as f:
-            system_prompt = f.read()
+
+        if system_prompt_path is None:
+            system_prompt_path = os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
+            with open(system_prompt_path, "r") as f:
+                system_prompt = f.read()
+        else:
+            with open(system_prompt_path, "r") as f:
+                system_prompt = f.read()
 
         return [{"role": "system", "content": system_prompt}]
 

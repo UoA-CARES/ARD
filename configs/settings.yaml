@@ -64,7 +64,7 @@ runner:
   # ard-isaaclab-tasks/scripts/hpc_push.sh) so `docker push` works.
   hpc:
     registry: "130.216.238.2:5500"       # CARES container registry
-    upi: ""                              # YOUR UPI — namespaces the per-user image
+    upi: "akoh751"                       # YOUR UPI — namespaces the per-user image
                                          # repo <upi>_ard-isaaclab and the NAS output
                                          # path. Leave empty to take it from $ARD_UPI
                                          # (keeps your UPI out of version control).
