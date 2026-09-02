@@ -22,12 +22,14 @@ class VLMFeedbackAgent:
     Args:
         task_description: Natural-language description of the task goal.
         agent_config: {model, base_url, sample, temperature...}.
+        system_prompt_path: Path to the system prompt file.
     """
 
     def __init__(
         self,
         task_description: str,
         agent_config: dict,
+        system_prompt_path: Optional[str] = None,
     ):
         self.model = agent_config.get("model")
         self.base_url = agent_config.get("base_url")
@@ -44,7 +46,7 @@ class VLMFeedbackAgent:
 
         self.raw_response = None  # Store the raw response for debugging
 
-        self.sys_message = self._init_sys_message()
+        self.sys_message = self._init_sys_message(system_prompt_path)
 
     def _init_sys_message(self, sys_prompt_path: Optional[str] = None) -> list[dict]:
         """
