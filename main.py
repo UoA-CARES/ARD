@@ -95,6 +95,7 @@ def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
     Get feedback from the VLM module for the best reward candidate.
 
     Args:
+        vlm: The VLM instance.
         evaluator: The RewardEvaluator instance.
         best: The best candidate record from the refinement loop.
         task_cfg: The task configuration dictionary.
@@ -103,17 +104,12 @@ def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
     Returns:
         The feedback string from the VLM module, or None if feedback is not available.
     """
-
-    if not refine_cfg.get("vlm_feedback", False):
-        logger.info("VLM feedback is disabled in the refinement configuration.")
-        return None
-    agent_config=refine_cfg.get("vlm", {})
-
     # Check if the best candidate has a valid summary path for feedback
     if not best.summary_path or not os.path.exists(best.summary_path):
         logger.warning("Best candidate's summary path is not available for VLM feedback.")
         return None
 
+    agent_config=refine_cfg.get("vlm", {})
     best.video_length = agent_config.get("video_length", 200)  # Default to 200 steps if not specified
 
     # Record the videos for the best candidate
@@ -148,6 +144,14 @@ def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
         agent_config=agent_config,
         seed=best.seed,
     )
+
+    # Score runs (both vlm and no vlm)
+    best.vlm_score = vlm.get_score()
+
+
+    if not refine_cfg.get("vlm_feedback", False):
+        logger.info("VLM feedback is disabled in the refinement configuration.")
+        return None
 
     feedback = vlm.send_input_to_vlm()
     vlm.save_vlm_feedback(feedback, os.path.dirname(best.summary_path))  # Save feedback to the same directory as training_summary.txt

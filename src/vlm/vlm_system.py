@@ -51,18 +51,19 @@ class VLM:
         # Build the task description with any task-specific information
         self.task_description = f"{task_description}\n{task_specific_information}"
 
+        self.vlm_agent = VLMFeedbackAgent(self.task_description, self.agent_config)
+
     def send_input_to_vlm(self):
         """
         Send the video or sliced frames to the VLMFeedbackAgent for critique and get feedback.
         """
-        vlm_agent = VLMFeedbackAgent(self.task_description, self.agent_config)
         if not self.as_images:
             # Critique the video directly
-            feedback = vlm_agent.critique_video(self.video_path, seed=self.seed)
+            feedback = self.vlm_agent.critique_video(self.video_path, seed=self.seed)
         else:
             # Slice the video into frames and critique the frames
             frame_list = self._slice_video_into_frames(self.video_path, self.sample_rate)
-            feedback = vlm_agent.critique_images(frame_list, seed=self.seed)
+            feedback = self.vlm_agent.critique_images(frame_list, seed=self.seed)
 
         return feedback
 
@@ -76,6 +77,17 @@ class VLM:
         """
         with open(os.path.join(output_dir, VLM_FEEDBACK_FILE), "w") as f:
             f.write(feedback)
+
+    def get_score(self):
+        """
+        Send the video or sliced frames to the VLMFeedbackAgent for a numeric score.
+        """
+        if not self.as_images:
+            score = self.vlm_agent.score(self.video_path, seed=self.seed, is_video=True)
+        else:
+            frame_list = self._slice_video_into_frames(self.video_path, self.sample_rate)
+            score = self.vlm_agent.score(frame_list, seed=self.seed, is_video=False)
+        return score
 
     def _slice_video_into_frames(self, video_path: str, fps: int) -> list[str]:
         """

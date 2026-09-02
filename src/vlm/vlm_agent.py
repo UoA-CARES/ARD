@@ -48,6 +48,10 @@ class VLMFeedbackAgent:
 
         self.sys_message = self._init_sys_message(system_prompt_path)
 
+        scorer_path = os.path.join(os.path.dirname(__file__), "vlm_scorer.txt")
+        self.score_sys_message = self._init_sys_message(scorer_path)
+
+
     def _init_sys_message(self, system_prompt_path: Optional[str] = None) -> list[dict]:
         """Initialise system message for the VLM model."""
         path = system_prompt_path or os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
@@ -73,6 +77,27 @@ class VLMFeedbackAgent:
         messages = self._build_messages([sequence_note] + image_content)
         logger.info("Image Critique requested. ")
         return self._call_vlm(messages, seed=seed)
+
+    def score(self, video_path: str, seed: int = None, is_video: bool = True) -> float:
+        """
+        Scores a video and returns a numerical score.
+        """
+        if is_video:
+            video_content = self._build_video_content(video_path)
+            messages = self._build_messages([video_content], sys_message=self.score_sys_message)
+        else:
+            sequence_note = {"type": "text", "text": "The following frames are labelled with its timestamp in seconds (e.g 0.14s). "
+                "Use these to judge the speed and timing of movements between frames."}
+            image_content = self._build_image_content(video_path)
+            messages = self._build_messages([sequence_note] + image_content, sys_message=self.score_sys_message)
+        logger.info("Video Scoring requested. ")
+        feedback = self._call_vlm(messages, seed=seed)
+        try:
+            score = float(feedback.strip())
+            return score
+        except ValueError:
+            logger.error(f"Failed to parse score from feedback: {feedback}")
+            raise
 
     def _build_video_content(self, video_path: str) -> dict:
         """
@@ -110,15 +135,13 @@ class VLMFeedbackAgent:
             })
         return content_list
 
-    def _build_messages(self, content_items: list[dict]) -> list[dict]:
+    def _build_messages(self, content_items: list[dict], sys_message: Optional[list[dict]] = None) -> list[dict]:
         """
         Builds a list of messages for the VLM model based on the task description + provided content items.
 
         """
-        content = [{"type": "text", 
-                    "text": self.task_description}] + content_items
-
-        return self.sys_message + [{"role": "user", "content": content}]
+        content = [{"type": "text", "text": self.task_description}] + content_items
+        return (sys_message or self.sys_message) + [{"role": "user", "content": content}]
 
 
     def _call_vlm(self, messages: list[dict], seed: int = None) -> str:

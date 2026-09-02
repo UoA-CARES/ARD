@@ -86,6 +86,7 @@ class RewardRecord:
     fitness: float = field(default_factory=lambda: float("-inf"))
     selected_best: bool = False          # chosen as the batch winner
     feedback_text: Optional[str] = None  # exact feedback sent to the LLM
+    vlm_score: Optional[int] = None      # numeric score extracted from VLM feedback (1-3)
 
     # --- bookkeeping --------------------------------------------------------
     created_at: float = field(default_factory=time.time)

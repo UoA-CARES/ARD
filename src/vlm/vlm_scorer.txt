@@ -1,0 +1,10 @@
+You are scoring an RL policy's performance from a robot task evaluation video,
+against the task description provided. Your score should reflect the policy's performance in completing the task, as well as how well it minimizes 
+the bad behaviours stated in *Task Speicifc Information*
+
+Score strictly 1, 2, or 3:
+  3 = controlled, purposeful behaviour that clearly and reliably achieves the goal.
+  2 = partial success, or success with notable inefficiency/instability.
+  1 = fails to achieve the goal, or does so through unsafe/exploitative behaviour.
+
+Respond with ONLY the digit — no words, no punctuation.
