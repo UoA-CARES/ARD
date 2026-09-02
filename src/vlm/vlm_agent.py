@@ -48,20 +48,11 @@ class VLMFeedbackAgent:
 
         self.sys_message = self._init_sys_message(system_prompt_path)
 
-    def _init_sys_message(self, sys_prompt_path: Optional[str] = None) -> list[dict]:
-        """
-        Initialise system message for the VLM model. 
-        """
-
-        if system_prompt_path is None:
-            system_prompt_path = os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
-            with open(system_prompt_path, "r") as f:
-                system_prompt = f.read()
-        else:
-            with open(system_prompt_path, "r") as f:
-                system_prompt = f.read()
-
-        return [{"role": "system", "content": system_prompt}]
+    def _init_sys_message(self, system_prompt_path: Optional[str] = None) -> list[dict]:
+        """Initialise system message for the VLM model."""
+        path = system_prompt_path or os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
+        with open(path, "r") as f:
+            return [{"role": "system", "content": f.read()}]
 
     def critique_video(self, video_path: str, seed: int = None) -> str:
         """
