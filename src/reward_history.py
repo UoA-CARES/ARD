@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Lifecycle status values, in rough order of progression.
 STATUS_PENDING = "pending"          # record created, nothing attempted yet
-STATUS_GENERATED = "generated"      # LLM produced a valid _get_rewards method
+STATUS_GENERATED = "generated"      # LLM produced a valid compute_reward method
 STATUS_GEN_FAILED = "gen_failed"    # LLM never produced a valid method
 STATUS_BUILD_FAILED = "build_failed"   # reward injection / codebase build failed
 STATUS_SUBMITTED = "submitted"      # dispatched to the HPC scheduler, awaiting result

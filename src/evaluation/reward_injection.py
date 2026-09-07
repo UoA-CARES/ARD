@@ -2,24 +2,38 @@
 AST-based reward injection for ard-isaaclab-tasks.
 
 Each task env in ``ard-isaaclab-tasks`` isolates its reward in a single
-``_get_rewards(self)`` method, documented as "the sole edit target for the ARD
-framework". ARD's LLM proposes a replacement ``_get_rewards``; this module
-splices it into the task env file via the AST.
+``compute_reward(self)`` method, documented as "the ARD edit target". ARD's LLM
+proposes a replacement ``compute_reward``; this module splices it into the task
+env file via the AST.
 
 Design — direct replacement
 ---------------------------
-The **fixed evaluation metric** (``fitness_function``) no longer lives in
-``_get_rewards`` at all: in ard-isaaclab-tasks it was moved into each env's
-``_get_dones`` (via ``_log_fitness``), computed from environment state and
-independent of the reward. So ARD replacing the reward can never alter the
-scoreboard — that guarantee now holds at the task layer.
+``compute_reward`` is the *only* method replaced. Two other things in the env
+stay fixed around it, which is what makes replacing the whole method safe:
 
-The task's ``_get_rewards`` has likewise been **cleaned** of the load-bearing
-side effects it used to carry (intermediate-value refresh, goal re-sampling,
-``prev_actions`` bookkeeping, …); those now live in their own hooks. With
-nothing left in ``_get_rewards`` but the reward computation itself, we simply
-**replace the whole method** with the LLM's proposed ``_get_rewards`` — no
-pristine body to preserve, no auxiliary ``_ard_designed_reward`` indirection.
+- ``_get_rewards`` is a framework hook, not an edit target. It calls
+  ``self.compute_reward()``, hands the result to ``log_reward_components`` (so
+  every component the LLM named reaches TensorBoard as ``Episode/components_<name>``),
+  and returns the total. Injection never touches it, so the component logging
+  cannot be dropped by a candidate that simply forgets about it.
+- The **fixed evaluation metric** (``fitness_function``) lives in each env's
+  ``_get_dones``, computed from environment state and independent of the reward.
+  So ARD replacing the reward can never alter the scoreboard — that guarantee
+  holds at the task layer.
+
+``compute_reward`` has likewise been **cleaned** of the load-bearing side effects
+the old ``_get_rewards`` carried (intermediate-value refresh, goal re-sampling,
+``prev_actions`` bookkeeping, …); those now live in their own hooks. With nothing
+left in it but the reward computation itself, we simply **replace the whole
+method** — no pristine body to preserve, no auxiliary indirection.
+
+The two-output contract
+-----------------------
+Following Eureka, a proposal must return ``(total_reward, reward_components)``:
+the per-env reward, plus a dict naming each term that went into it. The dict is
+what makes the reward observable across iterations, so :func:`_parse_reward_method`
+*enforces* it — a candidate returning a bare tensor would unpack wrong at every
+simulation step and waste an entire training job before failing.
 """
 
 import ast
@@ -27,9 +41,11 @@ import logging
 import textwrap
 from typing import Optional
 
+from . import config
+
 logger = logging.getLogger(__name__)
 
-REWARD_METHOD = "_get_rewards"
+REWARD_METHOD = config.REWARD_METHOD_NAME
 
 
 class RewardInjectionError(ValueError):
@@ -95,27 +111,60 @@ def _parse_reward_method(designed_src: str) -> ast.FunctionDef:
             "Proposed reward contains no function definition"
         )
 
-    # The env calls ``self._get_rewards()`` with no extra args; enforce (self).
+    # The env calls ``self.compute_reward()`` with no extra args; enforce (self).
     if not func.args.args or func.args.args[0].arg != "self":
         raise RewardInjectionError(
             "Proposed reward method must take 'self' as its first parameter"
         )
     func.name = REWARD_METHOD
     func.decorator_list = []  # methods on the env are plain instance methods
-    # Must actually return something (the reward).
-    if not any(isinstance(n, ast.Return) and n.value is not None
-               for n in ast.walk(func)):
-        raise RewardInjectionError("Proposed reward method has no 'return'")
+    _check_returns_pair(func)
     return func
+
+
+def _check_returns_pair(func: ast.FunctionDef) -> None:
+    """Reject a proposal that does not return ``(total_reward, components)``.
+
+    ``_get_rewards`` unpacks the result into two names on every simulation step, so
+    a proposal returning a bare tensor raises deep inside the training container —
+    after the image is built, the job dispatched, and (on HPC) a cluster slot spent.
+    The check is cheap and static, so do it here instead.
+
+    Only *syntactically* visible returns can be judged. A return whose value is a
+    plain name (``return result``) or a call is accepted rather than guessed at; the
+    check rejects the shapes that are unambiguously wrong — no return at all, or a
+    return of a literal tuple whose length is not 2.
+    """
+    returns = [n for n in ast.walk(func) if isinstance(n, ast.Return) and n.value is not None]
+    if not returns:
+        raise RewardInjectionError("Proposed reward method has no 'return'")
+
+    for node in returns:
+        if isinstance(node.value, ast.Tuple) and len(node.value.elts) != 2:
+            raise RewardInjectionError(
+                f"Proposed reward returns a {len(node.value.elts)}-tuple at line "
+                f"{node.lineno}; it must return exactly "
+                "(total_reward, reward_components)"
+            )
+
+    # At least one return has to be a literal 2-tuple, otherwise the method never
+    # demonstrably produces the pair the framework unpacks.
+    if not any(isinstance(n.value, ast.Tuple) and len(n.value.elts) == 2 for n in returns):
+        raise RewardInjectionError(
+            "Proposed reward never returns a (total_reward, reward_components) "
+            "pair; every return must be a 2-tuple of the total reward and the "
+            "dict of its named components"
+        )
 
 
 def inject_reward(env_source: str, designed_src: str) -> str:
     """
     Splice the LLM-proposed reward into ``env_source``.
 
-    Returns the full, modified module source. Only the ``_get_rewards`` method
-    region is rewritten; the rest of the file is preserved verbatim. The
-    proposed method replaces the original ``_get_rewards`` outright.
+    Returns the full, modified module source. Only the ``compute_reward`` method
+    region is rewritten; the rest of the file — ``_get_rewards``, the component
+    logging it performs, and the ``fitness_function`` metric — is preserved
+    verbatim. The proposed method replaces the original ``compute_reward`` outright.
 
     Raises RewardInjectionError on any structural problem.
     """

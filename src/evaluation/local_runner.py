@@ -20,7 +20,7 @@ staging (:class:`WorkspaceManager`) and scoring stay independent of how jobs run
 
 Container contract:
   * the project tarball (Dockerfile at root) is the ``docker build`` context, so
-    the candidate's injected ``_get_rewards`` is baked into the image per job;
+    the candidate's injected ``compute_reward`` is baked into the image per job;
   * the container runs non-root (``-u $(id -u):$(id -g)``) with ``HOME`` and the
     working dir pointed at the per-job mount, into which ``logs/`` is written;
   * task/seed/tunables are passed through the job ``env`` (the image entrypoint

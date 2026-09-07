@@ -1,5 +1,5 @@
-Below is the environment class for this task. Read it to see the `self.*` state, the observations, and the `_get_rewards` template you are improving:
+Below is the environment class for this task. Read it to see the `self.*` state, the observations, and the `compute_reward` template you are improving:
 
 {task_obs_code_string}
 
-Write an improved `_get_rewards` method for the following task: {task_description}.
+Write an improved `compute_reward` method for the following task: {task_description}.

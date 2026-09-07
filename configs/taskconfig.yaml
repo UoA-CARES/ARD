@@ -5,9 +5,10 @@
 # Registered task ID (see `python scripts/list_envs.py` in ard-isaaclab-tasks).
 task: "Isaac-ARD-Cartpole-v0"
 
-# Env file (relative to settings.tasks_repo) whose `_get_rewards` method is the
-# ARD edit target. The reward is spliced in via AST; the fixed fitness_function
-# logging in this method is preserved automatically.
+# Env file (relative to settings.tasks_repo) whose `compute_reward` method is the
+# ARD edit target. The reward is spliced in via AST; `_get_rewards` (which calls
+# it and logs its components) and the fixed fitness_function logging are both
+# outside the spliced region and preserved automatically.
 env_file: "source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py"
 
 # Natural-language task goal, handed to the LLM reward designer.

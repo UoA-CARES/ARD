@@ -1,8 +1,9 @@
-Please carefully analyze the policy feedback and provide a new, improved `_get_rewards` method. Some helpful tips for analyzing the feedback:
+Please carefully analyze the policy feedback and provide a new, improved `compute_reward` method. Some helpful tips for analyzing the feedback:
     (1) If `fitness_function` stays near its initial value (the policy is not learning the task), you must substantially rewrite the reward.
     (2) If the values for a certain reward component are near identical throughout, then RL is not able to optimize this component as written. You may consider:
         (a) Changing its scale or the value of its temperature parameter
         (b) Re-writing the reward component
         (c) Discarding the reward component
-    (3) If some reward component's magnitude is significantly larger than the others, re-scale it into a comparable range.
-Please analyze each existing reward component in the manner above first, and then write the improved `_get_rewards` method.
+    (3) If some reward component's magnitude is significantly larger than the others, re-scale it into a comparable range. Compare each `components_<name>` against `components_total` to see which component is actually driving the reward.
+    (4) If a component you wrote is missing from the feedback, it was never logged — check that you returned it in the dict.
+Please analyze each existing reward component in the manner above first, and then write the improved `compute_reward` method.

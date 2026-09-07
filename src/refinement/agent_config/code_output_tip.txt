@@ -1,11 +1,20 @@
 Output exactly one Python code block containing a single complete method definition, formatted as:
 ```python
-def _get_rewards(self) -> torch.Tensor:
+def compute_reward(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     ...
-    return total_reward
+    total_reward = ...
+    return total_reward, {
+        "component_name": component_tensor,
+        ...
+    }
 ```
+The output of the method must consist of two items:
+    (1) the total reward, shape (num_envs,),
+    (2) a dictionary of each individual reward component, each also shape (num_envs,).
 Some helpful tips for writing the method:
     (1) You may find it helpful to normalize the reward into a fixed range by applying transforms like torch.exp to the overall reward or its components.
     (2) If you transform a reward component, introduce a named temperature variable inside the method for it (not an argument); each transformed component should have its own temperature variable.
     (3) Keep tensor dtypes and devices consistent; call .float() where needed and create tensors on self.device.
-    (4) Return a single reward tensor of shape (num_envs,) (or the per-agent dict the template returns). Do not add, remove, or modify any `fitness_function` logging — the framework handles the evaluation metric for you.
+    (4) Name each component after what it measures (e.g. "rot_dist", "action_penalty", "goal_bonus"), not after its position in the sum. These names are what you will see in the next round of feedback.
+    (5) Put every term of the total into the dict, including sparse ones like a success bonus or a fall penalty. For a term applied with torch.where, put the resulting per-env tensor in the dict rather than the condition.
+    (6) Build the dict with a fixed key set on every step, and do not write to self.extras.

@@ -25,8 +25,9 @@ class FitnessScorer:
     """Reads the fitness metric from captured runs and ranks candidates."""
 
     def __init__(self, fitness_tag: str = config.FITNESS_METRIC):
-        # Matched by suffix so whatever scope rl_games/IsaacAlgoObserver prefixes
-        # it with (e.g. "Episode/fitness_function") still resolves.
+        # Matched on the final path segment so whatever scope rl_games/
+        # IsaacAlgoObserver prefixes it with (e.g. "Episode/fitness_function")
+        # still resolves. See `_resolve_tag` for why it is not looser than that.
         self.fitness_tag = fitness_tag
 
     # ---------------------------------------------------------------- scoring
@@ -65,12 +66,19 @@ class FitnessScorer:
             return float("-inf")
 
     def _resolve_tag(self, ea, wanted: str) -> Optional[str]:
-        """Resolve ``wanted`` to an actual scalar tag, matching by exact or suffix."""
+        """Resolve ``wanted`` to an actual scalar tag, by full tag or final segment.
+
+        The match is deliberately anchored to a whole path segment
+        ("Episode/fitness_function" resolves, "Episode/components_fitness_function" does
+        not). A looser ``endswith`` would let an LLM-named reward component shadow
+        the very metric the reward is scored on — the task layer already prefixes
+        components with ``components_``, and this is the other half of that guarantee.
+        """
         keys = ea.scalars.Keys()
         if wanted in keys:
             return wanted
         suffix = wanted.split("/")[-1]
-        matches = [k for k in keys if k.split("/")[-1] == suffix or k.endswith(suffix)]
+        matches = [k for k in keys if k.split("/")[-1] == suffix]
         if matches:
             if len(matches) > 1:
                 logger.warning(f"Multiple tags match {wanted!r}: {matches}; using {matches[0]}")

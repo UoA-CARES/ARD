@@ -1,10 +1,14 @@
 """
 LLM Agent for autonomous reward design (Eureka-style).
 
-The agent proposes complete ``_get_rewards(self)`` methods for an ard-isaaclab-tasks
+The agent proposes complete ``compute_reward(self)`` methods for an ard-isaaclab-tasks
 environment, then iterates on them using training feedback (per-component scalar
 trends + the fixed ``fitness_function`` evaluation metric). The proposed method is
 spliced into the task env via AST and dispatched for training by the evaluator.
+
+``compute_reward`` returns two things — the total reward and a dict of its named
+components — which is what closes the loop: the task layer logs every component to
+TensorBoard, and the next iteration's feedback shows the LLM what each one did.
 """
 
 import re
@@ -17,8 +21,17 @@ from src.refinement.files_operation import load_prompts
 
 logger = logging.getLogger(__name__)
 
-# A valid proposal must define a `_get_rewards(self ...)` method.
-GET_REWARDS_RE = re.compile(r"def\s+_get_rewards\s*\(\s*self\b", re.DOTALL)
+# A valid proposal must define a `compute_reward(self ...)` method — the ARD edit
+# target. `_get_rewards` is a fixed framework hook the LLM must not rewrite, so a
+# response offering one is not accepted as a proposal.
+COMPUTE_REWARD_RE = re.compile(r"def\s+compute_reward\s*\(\s*self\b", re.DOTALL)
+
+# Used when an iteration failed and no per-candidate reason was captured. A concrete
+# reason is always preferable — see `receive_feedback`'s `failure_msg`.
+GENERIC_FAILURE_MSG = (
+    "No reward function trained successfully this iteration, and the reason was not "
+    "captured. Rewrite an entirely new reward function."
+)
 
 # Code-block extraction patterns, most-specific first.
 _CODE_PATTERNS = [
@@ -33,7 +46,7 @@ class EurekaAgent:
 
     Args:
         task_description: Natural-language description of the task goal.
-        reward_template: Pristine ``_get_rewards`` source (shown as inspiration).
+        reward_template: Pristine ``compute_reward`` source (the contract to fill in).
         env_source: Full task env-class source (LLM task context).
         agent_config: {model, base_url, sample, temperature?}.
     """
@@ -81,15 +94,35 @@ class EurekaAgent:
             {"role": "user", "content": user_content},
         ]
 
-    def receive_feedback(self, best_response_text: str, summary_path: str = None, vlm_feedback: str = None) -> str:
+    def receive_feedback(
+        self,
+        best_response_text: str,
+        summary_path: str = None,
+        failure_msg: str = None,
+        vlm_feedback: str = None,
+    ) -> str:
         """
         Fold the previous iteration's outcome into the conversation.
 
+        Two feedback paths, as in Eureka. A candidate that *trained* gets the policy
+        summary: each reward component's statistics and trend (logged as
+        ``Episode/components_*`` by the task layer), optionally augmented with VLM
+        feedback. A candidate that *failed* gets the reason it failed, so the next
+        attempt can fix it rather than repeat it.
+
         Args:
-            best_response_text: Raw LLM response that produced the best run.
+            best_response_text: Raw LLM response that produced the best run — or, when
+                the whole iteration failed, one of the failed candidates' responses.
             summary_path: Path to that run's training_summary.txt, or None if the
-                iteration failed entirely (signals a hard reset).
-            vlm_feedback: Feedback from the VLM, if any.
+                iteration failed entirely.
+            failure_msg: Why that same candidate failed (its ``eval_error``), used only
+                when ``summary_path`` is absent. It must describe the candidate whose
+                code is being shown as ``best_response_text``: the LLM is about to see
+                its own code next to this reason, and pairing code with another
+                candidate's error would send it after the wrong bug. Falls back to a
+                generic rewrite request when the reason was not captured.
+            vlm_feedback: Optional qualitative feedback provided by a Vision-Language
+                Model (VLM) evaluating video/visual logs of the execution.
 
         Returns:
             The exact feedback message text appended to the conversation (so the
@@ -110,32 +143,33 @@ class EurekaAgent:
                 parts.append(self.prompts["vlm_feedback_tips"])
             else:
                 parts.append(self.prompts["code_feedback"])
-            feedback_content = "\n\n".join(parts)
 
+            feedback_content = "\n\n".join(parts)
         else:
             feedback_content = self.prompts["execution_error_feedback"].format(
-                traceback_msg="No reward function trained successfully this "
-                "iteration. Rewrite an entirely new reward function."
+                traceback_msg=failure_msg or GENERIC_FAILURE_MSG
             )
+
         feedback_content += "\n\n" + self.code_output_tip
 
         assistant_msg = {"role": "assistant", "content": best_response_text}
         user_msg = {"role": "user", "content": feedback_content}
+
         if len(self.messages) == 2:
             self.messages += [assistant_msg, user_msg]
         else:
             # Keep the window to system + initial-user + last assistant/user pair.
             self.messages[-2] = assistant_msg
             self.messages[-1] = user_msg
-        return feedback_content
 
+        return feedback_content
     def func_gen(self, messages, seed=None):
         """
         Query the LLM and return (method_source, raw_response).
 
         ``seed`` varies the sampler per candidate so identical prompts no longer
         collapse to identical completions (and stays reproducible). Retries until a
-        response contains a valid ``_get_rewards`` method.
+        response contains a valid ``compute_reward`` method.
         """
         max_retries = 10
         for attempt in range(1, max_retries + 1):
@@ -152,22 +186,22 @@ class EurekaAgent:
                 code = self._extract_method(response)
                 if code is not None:
                     return code, response
-                logger.warning(f"Attempt {attempt}: no valid _get_rewards in response")
+                logger.warning(f"Attempt {attempt}: no valid compute_reward in response")
             except Exception as e:  # noqa: BLE001 - surface API/transport errors and retry
                 logger.warning(f"Attempt {attempt} failed: {e}")
         raise RuntimeError(
-            "Failed to generate a valid _get_rewards method after 10 attempts."
+            "Failed to generate a valid compute_reward method after 10 attempts."
         )
 
     @staticmethod
     def _extract_method(response: str):
-        """Pull the first fenced code block that defines a _get_rewards method."""
+        """Pull the first fenced code block that defines a compute_reward method."""
         for pattern in _CODE_PATTERNS:
             for match in re.findall(pattern, response, re.DOTALL):
                 block = match.strip()
-                if GET_REWARDS_RE.search(block):
+                if COMPUTE_REWARD_RE.search(block):
                     return block
         # Fall back to the raw response if it itself is a bare method.
-        if GET_REWARDS_RE.search(response):
+        if COMPUTE_REWARD_RE.search(response):
             return response.strip()
         return None

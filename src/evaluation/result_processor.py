@@ -8,6 +8,10 @@ checkpoints. This module's job is strictly **capture**: locate the TensorBoard
 event file under that dir and write a human-readable scalar summary (used as LLM
 feedback). Nothing is packed or unpacked — the logs are read where they landed.
 
+The summary is a *selection*, not a dump: only the env's own ``Episode/`` scalars
+(reward components, the aggregate, the fitness metric) and a short allowlist of
+rl_games training scalars are reported. See :meth:`ResultProcessor.group_tags`.
+
 It deliberately does **not** read the fitness metric or pick a winner — that
 judgement lives in :mod:`src.evaluation.scorer`. Keeping capture and judgement
 apart lets the evaluator be responsible only for "run it and collect the
@@ -130,41 +134,103 @@ class ResultProcessor:
         return captured
 
     # ------------------------------------------------------------- TB summary
+    @staticmethod
+    def group_tags(scalar_tags):
+        """Select and split TensorBoard scalar tags into (reward, evaluation, training).
+
+        Two things happen here. First, **selection**: rl_games writes ~30 scalars per
+        run, most of them optimiser internals a reward designer cannot act on, plus
+        ``/step`` and ``/time`` duplicates of metrics already reported per iteration.
+        Only the ``Episode/`` scope (everything the env itself logs) and the four
+        rl_games tags in ``config.SUMMARY_TAG_ALLOWLIST`` are kept; the rest never
+        reach the prompt. Second, **grouping**: the reward's own components are
+        reported first, under their own heading, so the LLM reads what it wrote
+        instead of hunting for it among training diagnostics.
+
+        ``components_total`` is placed first in the reward group: the feedback prompt
+        asks the LLM to compare each component's magnitude against the aggregate.
+        """
+        reward, evaluation, training = [], [], []
+        for tag in scalar_tags:
+            in_scope = tag.startswith(config.SUMMARY_TAG_SCOPE)
+            if not in_scope and tag not in config.SUMMARY_TAG_ALLOWLIST:
+                continue
+            leaf = tag.split("/")[-1]
+            if in_scope and leaf.startswith(config.REWARD_SCALAR_PREFIX):
+                reward.append(tag)
+            elif in_scope and leaf in (config.FITNESS_METRIC, "consecutive_successes"):
+                evaluation.append(tag)
+            else:
+                training.append(tag)
+        reward.sort(key=lambda t: (t.split("/")[-1] != config.REWARD_TOTAL_METRIC, t))
+        # Report the allowlisted rl_games tags in the order they are declared, so the
+        # summary reads the same way for every run.
+        order = {t: i for i, t in enumerate(config.SUMMARY_TAG_ALLOWLIST)}
+        training.sort(key=lambda t: (order.get(t, len(order)), t))
+        return reward, evaluation, training
+
     def summarise_tensorboard(self, event_file_path: str, output_txt_path: str):
-        """Write a human-readable summary of all scalar metrics for LLM feedback."""
+        """Write a human-readable summary of the selected scalars, for LLM feedback.
+
+        Not every scalar in the event file: see :meth:`group_tags` for what is kept
+        and why.
+        """
         try:
             acc = load_accumulator(event_file_path)
-            scalar_tags = acc.Tags()["scalars"]
+            reward, evaluation, training = self.group_tags(acc.Tags()["scalars"])
 
             lines = [
                 "## Reinforcement Learning Model Performance Summary\n",
                 f"Source File: {os.path.basename(event_file_path)}\n",
                 "-" * 40 + "\n",
             ]
-            for tag in scalar_tags:
-                values = np.array([e.value for e in acc.Scalars(tag)])
-                if len(values) == 0:
+            sections = (
+                ("Reward components (from your `compute_reward`)", reward),
+                ("Task evaluation metric (fixed — you cannot change it)", evaluation),
+                ("Training diagnostics", training),
+            )
+            for heading, tags in sections:
+                if not tags:
                     continue
-                initial_idx = max(int(len(values) * 0.1), 1)
-                mid_idx = int(len(values) * 0.5)
-                initial_perf = np.mean(values[:initial_idx])
-                mid_perf = values[mid_idx]
-                final_perf = np.mean(values[-initial_idx:])
+                lines.append(f"# {heading}\n")
+                for tag in tags:
+                    lines.extend(self._summarise_tag(acc, tag))
 
-                lines.append(f"## Metric: {tag}\n")
-                lines.append("- **Overall Statistics:**")
-                lines.append(f"  - Mean: {np.mean(values):.4f}")
-                lines.append(f"  - Std Dev: {np.std(values):.4f} (Measures stability/variance)")
-                lines.append(f"  - Max Value: {np.max(values):.4f}")
-                lines.append(f"  - Min Value: {np.min(values):.4f}\n")
-                lines.append("- **Performance Trend:**")
-                lines.append(f"  - Initial Performance (first 10%): ~{initial_perf:.4f}")
-                lines.append(f"  - Mid-Training Performance (at 50%): ~{mid_perf:.4f}")
-                lines.append(f"  - Final Performance (last 10%): ~{final_perf:.4f}\n")
-                lines.append("-" * 40 + "\n")
+            if not reward:
+                lines.append(
+                    "NOTE: no `components_*` scalars were logged, so no reward component "
+                    "could be reported. Make sure `compute_reward` returns its "
+                    "components dict.\n"
+                )
 
             with open(output_txt_path, "w") as f:
                 f.write("\n".join(lines))
             logger.info(f"Summary written to {output_txt_path}")
         except Exception as e:  # noqa: BLE001
             logger.error(f"Error summarizing TensorBoard file: {e}")
+
+    def _summarise_tag(self, acc, tag: str) -> list:
+        """Render one scalar's statistics and trend as summary lines."""
+        values = np.array([e.value for e in acc.Scalars(tag)])
+        if len(values) == 0:
+            return []
+
+        initial_idx = max(int(len(values) * 0.1), 1)
+        mid_idx = int(len(values) * 0.5)
+        initial_perf = np.mean(values[:initial_idx])
+        mid_perf = values[mid_idx]
+        final_perf = np.mean(values[-initial_idx:])
+
+        return [
+            f"## Metric: {tag}\n",
+            "- **Overall Statistics:**",
+            f"  - Mean: {np.mean(values):.4f}",
+            f"  - Std Dev: {np.std(values):.4f} (Measures stability/variance)",
+            f"  - Max Value: {np.max(values):.4f}",
+            f"  - Min Value: {np.min(values):.4f}\n",
+            "- **Performance Trend:**",
+            f"  - Initial Performance (first 10%): ~{initial_perf:.4f}",
+            f"  - Mid-Training Performance (at 50%): ~{mid_perf:.4f}",
+            f"  - Final Performance (last 10%): ~{final_perf:.4f}\n",
+            "-" * 40 + "\n",
+        ]

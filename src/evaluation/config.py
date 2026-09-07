@@ -8,13 +8,57 @@ ard-isaaclab-tasks substrate.
 import os
 
 # Name of the method ARD rewrites in each task env file (the "sole edit target").
-REWARD_METHOD_NAME = "_get_rewards"
+# It is NOT ``_get_rewards``: that stays a fixed framework hook which calls this
+# method and publishes what it returns. ``compute_reward`` is the Eureka-style
+# workspace, returning ``(total_reward, reward_components)``.
+REWARD_METHOD_NAME = "compute_reward"
 
 # The fixed evaluation metric the tasks log via
-# ``self.extras["log"]["fitness_function"]``. Matched by suffix against the
-# TensorBoard scalar tags, so any scope prefix the rl_games observer adds still
-# resolves (e.g. "Episode/fitness_function").
+# ``self.extras["log"]["fitness_function"]``. Matched against the TensorBoard
+# scalar tags by full tag or by final path segment, so the scope prefix the
+# rl_games observer adds still resolves (e.g. "Episode/fitness_function").
 FITNESS_METRIC = "fitness_function"
+
+# Prefix the task layer puts on every reward scalar it logs (see
+# ``ard_tasks.utils.reward_logging``): each component from the LLM's
+# ``reward_components`` dict becomes ``Episode/components_<name>``, and the aggregate
+# becomes ``Episode/components_total``. ARD uses this to pull the reward's own scalars
+# out of the ~30 tags rl_games writes, and show them to the LLM first.
+REWARD_SCALAR_PREFIX = "components_"
+
+# The aggregate reward's scalar name (Eureka's ``gpt_reward``).
+REWARD_TOTAL_METRIC = REWARD_SCALAR_PREFIX + "total"
+
+# --------------------------------------------------------------------------- #
+# What goes into the LLM feedback summary                                      #
+# --------------------------------------------------------------------------- #
+# rl_games writes ~30 scalars per run. Most are optimiser internals the reward
+# designer cannot act on (a_loss, c_loss, kl, e_clip, lr_mul, the whole
+# performance/* group, and the /step and /time duplicates of metrics already
+# reported per iteration). Pasting all of them into every feedback message spends
+# context on noise and buries the reward's own components. Only the scalars below
+# reach the summary.
+
+# Everything the env logs through ``extras["log"]`` lands under this scope: the
+# reward components, the aggregate, ``fitness_function``, ``consecutive_successes``,
+# and any task-specific metric (e.g. the vision task's ``pose_loss``). All of it is
+# kept — this is the reward designer's own instrumentation.
+SUMMARY_TAG_SCOPE = "Episode/"
+
+# The few rl_games-side scalars worth keeping, by exact tag:
+#   episode_lengths/iter — how long episodes last, the clearest read on whether the
+#                          policy is surviving longer or terminating earlier.
+#   rewards/iter         — rl_games' own mean episode return, for comparison against
+#                          ``Episode/components_total``.
+#   losses/entropy       — policy entropy; a collapse means exploration stopped.
+#   info/last_lr         — the adaptive LR, which moves when the KL schedule reacts.
+# Names match rl_games' writer exactly (note ``episode_lengths``, plural).
+SUMMARY_TAG_ALLOWLIST = (
+    "episode_lengths/iter",
+    "rewards/iter",
+    "losses/entropy",
+    "info/last_lr",
+)
 
 # Default per-job wall-clock timeout for a local training run (seconds).
 DEFAULT_TRAINING_TIMEOUT = 36000

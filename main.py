@@ -3,7 +3,8 @@
 Entry point for the ARD (Autonomous RL Designer) reward-refinement pipeline.
 
 Stage 2 — Automated reward refinement (Eureka-style):
-  1. An LLM proposes complete `_get_rewards` methods for an ard-isaaclab-tasks env.
+  1. An LLM proposes complete `compute_reward` methods for an ard-isaaclab-tasks env,
+     each returning (total_reward, reward_components).
   2. Each candidate is spliced into a fresh copy of the task repo (AST injection)
      and built + run as a local docker job (PPO / rl_games), one at a time.
   3. Finished jobs are scored by the task's fixed `fitness_function` metric; the
@@ -256,9 +257,22 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         if best is None:
             logger.error("No candidate trained successfully; requesting a rewrite")
-            seed_record = next((r for r in run_records if r.raw_response), None)
+            # Show the LLM one failed candidate's code together with the reason that
+            # same candidate failed. Prefer a record that actually carries a reason:
+            # a candidate rejected at injection has a precise one ("must return a
+            # (total_reward, reward_components) pair"), which is exactly what a batch
+            # that all failed the same contract check needs to be told. Without it the
+            # next iteration repeats the mistake, and every remaining iteration with it.
+            seed_record = next(
+                (r for r in run_records if r.raw_response and r.eval_error), None
+            ) or next((r for r in run_records if r.raw_response), None)
+            failure_msg = seed_record.eval_error if seed_record else None
+            if failure_msg:
+                logger.error(f"Failure reported to the LLM: {failure_msg}")
             feedback = agent.receive_feedback(
-                seed_record.raw_response if seed_record else "", summary_path=None
+                seed_record.raw_response if seed_record else "",
+                summary_path=None,
+                failure_msg=failure_msg,
             )
             if seed_record:
                 history.update(seed_record, feedback_text=feedback)

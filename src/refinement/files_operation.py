@@ -2,7 +2,7 @@
 File helpers for the refinement layer.
 
 Reward extraction now lives in :mod:`src.evaluation.reward_injection`
-(``extract_method_source``), which pulls the task's ``_get_rewards`` method via
+(``extract_method_source``), which pulls the task's ``compute_reward`` method via
 the AST. This module just loads the prompt templates.
 """
 

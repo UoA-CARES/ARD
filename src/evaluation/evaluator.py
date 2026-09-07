@@ -4,7 +4,7 @@ Local evaluation orchestrator.
 ``RewardEvaluator`` is the high-level entry point ARD's refinement loop calls.
 Its sole responsibility is **dispatch + capture** — running candidates and
 collecting their output. For a batch of :class:`~src.reward_history.RewardRecord`
-(each carrying a proposed ``_get_rewards`` method) it walks them one at a time:
+(each carrying a proposed ``compute_reward`` method) it walks them one at a time:
 
 1. Builds the candidate's job codebase (pristine ard-isaaclab-tasks repo + the
    proposed reward spliced in) — :class:`WorkspaceManager`.
@@ -180,7 +180,7 @@ class RewardEvaluator:
 
     # ------------------------------------------------------------------ prompt
     def get_reward_template(self) -> str:
-        """Pristine ``_get_rewards`` source, for seeding the LLM prompt."""
+        """Pristine ``compute_reward`` source, for seeding the LLM prompt."""
         return self.workspace.get_reward_template()
 
     def get_env_source(self) -> str:

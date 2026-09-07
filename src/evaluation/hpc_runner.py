@@ -11,7 +11,7 @@ capture so the whole batch trains **concurrently** on the cluster:
     collect(job_id, dest)              -> work_dir   copy NAS/<job_id> -> dest
 
 Reward delivery (per-candidate image). The scheduler *pulls a prebuilt image*,
-so each candidate's injected ``_get_rewards`` must be baked into its own image
+so each candidate's injected ``compute_reward`` must be baked into its own image
 tag. We reuse the exact ``.tar.gz`` :class:`WorkspaceManager` already builds for
 the local backend as the ``docker build`` context, tag it
 ``<registry>/<repo>:<tag>``, push it, and submit a job that pulls it. This is the

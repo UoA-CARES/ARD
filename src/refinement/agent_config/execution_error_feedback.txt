@@ -1,1 +1,1 @@
-Executing your `_get_rewards` method produced the following error: {traceback_msg}. Please fix the problem and provide a new, corrected `_get_rewards` method.
+Your `compute_reward` method failed with the following error: {traceback_msg}. Please fix the problem and provide a new, corrected `compute_reward` method.

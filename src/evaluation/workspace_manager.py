@@ -31,7 +31,7 @@ class WorkspaceManager:
     Args:
         tasks_repo: Path to the ard-isaaclab-tasks checkout (the pristine source).
         env_file_rel: Path of the task env file *relative to* ``tasks_repo`` whose
-            ``_get_rewards`` is the injection target,
+            ``compute_reward`` is the injection target,
             e.g. ``source/ard_tasks/ard_tasks/tasks/direct/cartpole/cartpole_env.py``.
         build_root: Where to stage per-candidate copies (default: a temp dir).
     """
@@ -70,7 +70,7 @@ class WorkspaceManager:
             return False
 
     def get_reward_template(self) -> str:
-        """Return the pristine ``_get_rewards`` source (used to prompt the LLM)."""
+        """Return the pristine ``compute_reward`` source (used to prompt the LLM)."""
         with open(os.path.join(self.tasks_repo, self.env_file_rel)) as fh:
             return extract_method_source(fh.read())
 
@@ -87,7 +87,7 @@ class WorkspaceManager:
         Stage a fresh repo copy with ``reward_method_src`` injected and pack it.
 
         Args:
-            reward_method_src: LLM-proposed ``_get_rewards`` method source.
+            reward_method_src: LLM-proposed ``compute_reward`` method source.
             tag: Unique label for this candidate (used in dir/tarball names).
             checkpoint_path: Warm-start checkpoint to bake into the image, at
                 ``config.WARM_START_CHECKPOINT_REL``. Baking it into the same

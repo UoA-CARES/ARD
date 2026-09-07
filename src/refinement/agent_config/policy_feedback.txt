@@ -1,1 +1,4 @@
-We trained a reinforcement learning (RL) policy using your `_get_rewards` method and tracked statistics over training. Below are the overall statistics and performance trends for every scalar logged, including each reward component and the task's fixed evaluation metric `fitness_function` (higher is better — this is what your reward is ultimately judged on, and you cannot change it).
+We trained a reinforcement learning (RL) policy using your `compute_reward` method and tracked statistics over training. Below you get, for each metric, its overall statistics (mean, standard deviation, max, min) and how it moved over training (early, mid, late):
+    - each individual reward component you returned, as `components_<name>`, and the total reward as `components_total`;
+    - the task's fixed evaluation metric `fitness_function` (higher is better — this is what your reward is ultimately judged on, and you cannot change it);
+    - a few training diagnostics: `episode_lengths/iter` (how long episodes last), `rewards/iter` (mean episode return), `losses/entropy` (policy entropy — a collapse means exploration stopped), `info/last_lr` (the adaptive learning rate).

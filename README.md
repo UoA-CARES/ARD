@@ -4,7 +4,7 @@ ARD is an LLM-driven reward-design pipeline for reinforcement learning in NVIDIA
 
 ARD is a **thin orchestrator**. It does not carry the Isaac Lab / rl_games stack itself; each candidate trains inside a docker container. It depends on one companion repo:
 
-- **[`ard-isaaclab-tasks`](../ard-isaaclab-tasks)**, the RL task substrate. Three tasks are registered as `Isaac-ARD-*`, each isolating its reward in a single `_get_rewards` method (ARD's edit target) and logging a fixed `fitness_function` evaluation metric from `_get_dones`, independent of the reward.
+- **[`ard-isaaclab-tasks`](../ard-isaaclab-tasks)**, the RL task substrate. Three tasks are registered as `Isaac-ARD-*`, each isolating its reward in a single `compute_reward` method (ARD's edit target) that returns `(total_reward, reward_components)`, and logging a fixed `fitness_function` evaluation metric from `_get_dones`, independent of the reward.
 
 For each candidate, ARD builds that repo's `Dockerfile`, then either `docker run`s it on the local machine one candidate at a time (`LocalRunner`), or builds, pushes, and submits it to the CARES HPC Scheduler, where the whole batch trains concurrently (`HPCRunner`). Which path is used is set by `runner.backend` in `configs/settings.yaml`. LLM generation is fanned out across threads either way; only the training step differs between backends.
 
@@ -17,7 +17,7 @@ For each candidate, ARD builds that repo's `Dockerfile`, then either `docker run
 
 ```
                     ┌───────────────────── ARD (this repo) ─────────────────────┐
-  task description ─►  EurekaAgent: proposes N _get_rewards methods              │
+  task description ─►  EurekaAgent: proposes N compute_reward methods            │
                     │      ▲                        │                           │
                     │      │ feedback           AST inject each into a fresh    │
                     │      │ (fitness +         copy of ard-isaaclab-tasks      │
@@ -33,16 +33,18 @@ For each candidate, ARD builds that repo's `Dockerfile`, then either `docker run
 
 One refinement iteration:
 
-1. **Generate.** The LLM proposes `sample` candidate `_get_rewards(self)` methods.
+1. **Generate.** The LLM proposes `sample` candidate `compute_reward(self)` methods. Each returns **two** things, as in Eureka: the total reward, and a dict naming every component that went into it.
 2. **Inject.** Each candidate is spliced into a fresh copy of `ard-isaaclab-tasks` via AST and packed into a `.tar.gz` codebase. With `warm_start` on and a previous iteration's winner already known, that winner's checkpoint is baked into the same tarball (see step 6), so every candidate this iteration resumes from it instead of random weights.
 3. **Run.** Each codebase (with its `Dockerfile`) is trained according to `runner.backend`: the local backend builds and `docker run`s each candidate in turn; the HPC backend builds, pushes, and submits the whole batch to the CARES scheduler and trains it concurrently. Either way the task is selected via the job's config (`TASK`, plus `SEED` for eval runs).
-4. **Score.** Each finished job's `logs/` are read from its work dir; each is scored by its `fitness_function` (from the training TensorBoard logs).
+4. **Score.** Each finished job's `logs/` are read from its work dir; each is scored by its `fitness_function` (from the training TensorBoard logs). The same logs carry every reward component the candidate named, as `Episode/components_<name>`. The feedback summary keeps those, the fitness metric, and four rl_games training scalars — not the whole event file.
 5. **Re-evaluate & feed back.** The iteration's best candidate is retrained `num_eval` times to de-noise its score, and its training summary is fed back to the LLM to inform the next iteration.
 6. **Warm-start.** With `warm_start` enabled (`refineconfig.yaml`'s `warm_start: true`, or pass `--warm-start` — off by default), the de-noised winner's checkpoint is carried forward as the next iteration's starting point — read back in at step 2 above. Iteration 1 always cold-starts, since no previous winner exists yet.
 
 This repeats every iteration, not just once at the end — each iteration both scores a winner and hands its checkpoint forward. Total trainings per task = `iteration * (sample + num_eval)`.
 
-The evaluation metric is **isolated in the task layer**: it lives in each task's `_get_dones`, not `_get_rewards`, so the LLM can rewrite the reward freely without ever altering the scoreboard it is judged on. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the injection mechanism and design rationale.
+**Reward components stay observable.** This is Eureka's central mechanism. Because `compute_reward` returns its components alongside the total, the task layer logs each one to TensorBoard, and each iteration's feedback shows the LLM how every component it wrote behaved over training — so it can rescale, rewrite, or discard them on evidence rather than guesswork. The framework does that logging in `_get_rewards`, a fixed hook ARD never rewrites, so no candidate can drop it.
+
+The evaluation metric is **isolated in the task layer**: it lives in each task's `_get_dones`, not in `compute_reward`, so the LLM can rewrite the reward freely without ever altering the scoreboard it is judged on. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the injection mechanism and design rationale.
 
 ## Prerequisites
 
@@ -91,7 +93,7 @@ Three YAML files under `configs/`:
 | File | What it sets |
 |---|---|
 | `settings.yaml` | `tasks_repo`, `output_dir`, `build_root`, and the `runner` block (see below). |
-| `taskconfig.yaml` | The task: `task` (e.g. `Isaac-ARD-Cartpole-v0`), `env_file` (the env whose `_get_rewards` is rewritten), `description` (the LLM's brief), `max_iterations`. |
+| `taskconfig.yaml` | The task: `task` (e.g. `Isaac-ARD-Cartpole-v0`), `env_file` (the env whose `compute_reward` is rewritten), `description` (the LLM's brief), `max_iterations`. |
 | `refineconfig.yaml` | The loop: `iteration`, `num_eval`, `base_seed`, `warm_start` (default `false` — resume each iteration from the previous iteration's de-noised winner instead of random weights, when enabled; see [How the loop works](#how-the-loop-works)), and the `agent` block (`model`, `base_url`, `sample`, `temperature`). |
 
 `runner.backend` in `settings.yaml` picks how candidates train:
