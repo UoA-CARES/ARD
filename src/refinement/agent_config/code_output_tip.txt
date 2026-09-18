@@ -18,3 +18,4 @@ Some helpful tips for writing the method:
     (4) Name each component after what it measures (e.g. "rot_dist", "action_penalty", "goal_bonus"), not after its position in the sum. These names are what you will see in the next round of feedback.
     (5) Put every term of the total into the dict, including sparse ones like a success bonus or a fall penalty. For a term applied with torch.where, put the resulting per-env tensor in the dict rather than the condition.
     (6) Build the dict with a fixed key set on every step, and do not write to self.extras.
+    (7) The tensor you log for a component must be its actual contribution to total_reward — after any coefficient, weight, or temperature has been applied. If you write `total_reward = foo * 0.1 + ...`, the dict must contain `foo * 0.1`, not the unweighted `foo`. Otherwise the feedback you see next round won't reflect what the policy was actually optimized against.
