@@ -5,7 +5,8 @@ then provide a new, improved `compute_reward` method.
         (a) Changing its scale or the value of its temperature parameter
         (b) Re-writing the reward component
         (c) Discarding the reward component
-    (3) If some reward component's magnitude is significantly larger than the others, re-scale it into a comparable range.
-    (4) Resolve any visual policy failures or unwanted behaviors identified in the VLM feedback.
+    (3) If some reward component's magnitude is significantly larger than the others, re-scale it into a comparable range. Compare each `components_<name>` against `components_total` to see which component is actually driving the reward.
+    (4) If a component you wrote is missing from the feedback, it was never logged — check that you returned it in the dict.
+    (5) Resolve any visual policy failures or unwanted behaviors identified in the VLM feedback.
 Please carefully analyze each existing reward component and visual observation in the manner above first, 
 and then write the improved compute_reward method.
