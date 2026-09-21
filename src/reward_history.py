@@ -69,6 +69,7 @@ class RewardRecord:
     vlm_response: Optional[str] = None   # verbatim VLM feedback (if any)
     reward_method: Optional[str] = None  # extracted _get_rewards source
     gen_error: Optional[str] = None      # why generation failed, if it did
+    vlm_error: Optional[str] = None      # why VLM feedback failed, if it did
 
     # --- dispatch / evaluation (local runner / hpc scheduler) ---------------
     status: str = STATUS_PENDING

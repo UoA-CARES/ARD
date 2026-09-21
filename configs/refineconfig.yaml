@@ -1,11 +1,12 @@
 # Eureka refinement parameters
 # Trainings per task = iteration * agent.sample + num_eval
-iteration: 10    # how many refinement iterations to run
+iteration: 5    # how many refinement iterations to run
 num_eval: 5     # seeds the run's best reward is re-trained on, once, after the loop
-base_seed: 44   # eval-phase seeds are base_seed + k + 1 (passed to each job as env SEED -> train.py --seed)
+base_seed: 42   # eval-phase seeds are base_seed + k + 1 (passed to each job as env SEED -> train.py --seed)
 max_workers: 48
 warm_start: False  # resume each iteration's jobs from the previous iteration's best checkpoint (cold start on iteration 1)
-vlm_feedback: True # whether to use VLM Critic for refinement (set to false to skip VLM Critic)
+vlm_feedback: False # whether to use VLM Critic for refinement (set to false to skip VLM Critic)
+vlm_margin: 0.1     # margin for VLM scoring; candidates must be within this fraction of the best fitness to be considered for VLM scoring
 
 # Eureka agent (LLM) settings
 agent:
@@ -36,7 +37,7 @@ vlm:
   video_length: 200     # length of the video clip to record for evaluation (in steps, default is 200)
   sample_rate: 8        # sample rate for video recording (frames per second)
   frame_cap: 1000       # maximum number of frames to process (to avoid excessive memory usage)    
-  camera_angle: 1       # 0: default (isometric facing right), 1: opposite (isometric facing left), 2: front, 3: top down view  
+  camera_angle: 0       # 0: default (isometric facing right), 1: opposite (isometric facing left), 2: front, 3: top down view  
 
   logging:
     jsonl_enabled: true

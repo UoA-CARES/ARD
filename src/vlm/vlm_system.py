@@ -5,6 +5,7 @@ Stores images (if any) and gets feedback from the VLMFeedbackAgent.
 
 """
 
+import json
 import os
 import logging
 import shutil
@@ -57,37 +58,27 @@ class VLM:
         """
         Send the video or sliced frames to the VLMFeedbackAgent for critique and get feedback.
         """
+        response_format = {"type": "json_object"}
         if not self.as_images:
             # Critique the video directly
-            feedback = self.vlm_agent.critique_video(self.video_path, seed=self.seed)
+            feedback = self.vlm_agent.critique_video(self.video_path, seed=self.seed, response_format=response_format)
         else:
             # Slice the video into frames and critique the frames
             frame_list = self._slice_video_into_frames(self.video_path, self.sample_rate)
-            feedback = self.vlm_agent.critique_images(frame_list, seed=self.seed)
+            feedback = self.vlm_agent.critique_images(frame_list, seed=self.seed, response_format=response_format)
 
         return feedback
 
     def save_vlm_feedback(self, feedback: str, output_dir: str):
         """
-        Saves the VLM feedback to a text file in "training_record" subdir where "training_summary.txt" is located.
+        Dumps the VLM feedback to a dict in "training_record" subdir where "training_summary.txt" is located.
 
         Args:
             feedback: The feedback string to save.
             output_dir: Path to "training_record" subdir. Will be called via `winner.summary_path` from `main.py`.
         """
         with open(os.path.join(output_dir, VLM_FEEDBACK_FILE), "w") as f:
-            f.write(feedback)
-
-    def get_score(self):
-        """
-        Send the video or sliced frames to the VLMFeedbackAgent for a numeric score.
-        """
-        if not self.as_images:
-            score = self.vlm_agent.score(self.video_path, seed=self.seed, is_video=True)
-        else:
-            frame_list = self._slice_video_into_frames(self.video_path, self.sample_rate)
-            score = self.vlm_agent.score(frame_list, seed=self.seed, is_video=False)
-        return score
+            json.dump(feedback, f, indent=2)
 
     def _slice_video_into_frames(self, video_path: str, fps: int) -> list[str]:
         """

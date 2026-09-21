@@ -6,6 +6,7 @@ which is then used as reward reflection for the next iteration of the Eureka pip
 """
 
 
+import json
 import os
 import logging
 import base64
@@ -49,9 +50,6 @@ class VLMFeedbackAgent:
 
         self.sys_message = self._init_sys_message(system_prompt_path)
 
-        scorer_path = os.path.join(os.path.dirname(__file__), "vlm_scorer.txt")
-        self.score_sys_message = self._init_sys_message(scorer_path)
-
 
     def _init_sys_message(self, system_prompt_path: Optional[str] = None) -> list[dict]:
         """Initialise system message for the VLM model."""
@@ -66,7 +64,7 @@ class VLMFeedbackAgent:
         video_content = self._build_video_content(video_path)
         messages = self._build_messages([video_content])
         logger.info("Video Critique requested. ")
-        return self._call_vlm(messages, seed=seed, response_format=response_format)
+        return self._call_and_parse(messages, seed=seed, response_format=response_format)
 
     def critique_images(self, frame_paths: list[str], seed: int = None, response_format: Optional[dict] = None) -> str:
         """
@@ -77,7 +75,7 @@ class VLMFeedbackAgent:
         image_content = self._build_image_content(frame_paths)
         messages = self._build_messages([sequence_note] + image_content)
         logger.info("Image Critique requested. ")
-        return self._call_vlm(messages, seed=seed, response_format=response_format)
+        return self._call_and_parse(messages, seed=seed, response_format=response_format)
 
     def score(self, video_path: str, seed: int = None, is_video: bool = True) -> float:
         """
@@ -99,6 +97,20 @@ class VLMFeedbackAgent:
         except ValueError:
             logger.error(f"Failed to parse score from feedback: {feedback}")
             raise
+
+    def _parse_response(self, response: str) -> dict:
+        text = response.strip()
+        if text.startswith("```"):
+            text = text.strip("`")            # drop fences
+            text = text.removeprefix("json").strip()
+        data = json.loads(text)               # JSONDecodeError is a ValueError subclass
+
+        if data.get("score") not in (1, 2, 3):
+            raise ValueError(f"Invalid score: {data.get('score')!r}")
+        if not isinstance(data.get("reasoning"), str) or not data["reasoning"].strip():
+            raise ValueError("Missing reasoning")
+        return data
+
 
     def _build_video_content(self, video_path: str) -> dict:
         """
@@ -144,6 +156,15 @@ class VLMFeedbackAgent:
         content = [{"type": "text", "text": self.task_description}] + content_items
         return (sys_message or self.sys_message) + [{"role": "user", "content": content}]
 
+    def _call_and_parse(self, messages, seed, response_format, attempts=3) -> dict:
+        for i in range(attempts):
+            raw = self._call_vlm(messages, seed=None if seed is None else seed + i,
+                                response_format=response_format)
+            try:
+                return self._parse_response(raw)
+            except ValueError as e:
+                logger.warning(f"VLM parse failed (attempt {i+1}/{attempts}): {e}")
+        raise RuntimeError(f"VLM returned no valid JSON after {attempts} attempts")
 
     def _call_vlm(self, messages: list[dict], seed: int = None, response_format: Optional[dict] = None) -> str:
         """
@@ -170,7 +191,6 @@ class VLMFeedbackAgent:
                 if feedback is not None:
                     logger.info(f"VLM feedback received")
                     logger.info(f"Finish Reasoning: {response.choices[0].finish_reason}")
-                        
                     return feedback
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed: {e}")

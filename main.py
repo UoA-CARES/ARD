@@ -91,6 +91,7 @@ def resolve_task_config(task_name, tasks_repo):
         f"No ard_meta.yaml for task '{task_name}' in {direct_root}. "
         f"Available: {available}"
     )
+
 def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
     """
     Get feedback from the VLM module for the best reward candidate.
@@ -150,9 +151,9 @@ def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
     best.vlm_score = vlm.get_score()
 
 
-    if not refine_cfg.get("vlm_feedback", False):
-        logger.info("VLM feedback is disabled in the refinement configuration.")
-        return None
+    # if not refine_cfg.get("vlm_feedback", False):
+    #     logger.info("VLM feedback is disabled in the refinement configuration.")
+    #     return None
 
     feedback = vlm.send_input_to_vlm()
     vlm.save_vlm_feedback(feedback, os.path.dirname(best.summary_path))  # Save feedback to the same directory as training_summary.txt
@@ -252,8 +253,19 @@ def run_refinement(settings, task_cfg, refine_cfg):
             run_records,
             checkpoint_path=warm_start_checkpoint if warm_start else None,
         )
+
+        # VLM call on every candidate
+        for record in run_records:
+            vlm_feedback = get_vlm_feedback(evaluator, record, task_cfg, refine_cfg)
+            if vlm_feedback:
+                logger.info(f"VLM feedback received for record {record.index}:\n{vlm_feedback}")
+                record.vlm_response = vlm_feedback  # Store the VLM feedback in the record
+            else:
+                logger.info(f"No VLM feedback received for record {record.index}.")
+
+
         scorer.score_all(run_records)
-        best = scorer.select_best(run_records)
+        best = scorer.select_best_vlm(run_records, margin=refine_cfg.get("vlm_margin", 0.1))  # Use VLM scoring with margin
 
         if best is None:
             logger.error("No candidate trained successfully; requesting a rewrite")
@@ -281,14 +293,6 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
 
-        # --- VLM feedback phase: send the best candidate's video to VLM -----
-        vlm_feedback = get_vlm_feedback(evaluator, best, task_cfg, refine_cfg)
-        if vlm_feedback:
-            logger.info(f"VLM feedback received:\n{vlm_feedback}")
-            best.vlm_response = vlm_feedback  # Store the VLM feedback in the best record
-        else:
-            logger.info("No VLM feedback received.")
-
         # --- Feedback phase: fold the outcome back into the conversation -----
         # The summary must come from the run that was scored: the LLM is shown
         # its own code next to that same run's numbers. Pairing the code with a
@@ -312,7 +316,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
     # that a later iteration discards, and still leave the final winner scored by
     # a single seed. `select_best` over every run record marks that winner (and
     # only it) as `selected_best` in the history.
-    best = scorer.select_best([r for r in history.all() if r.phase == "run"])
+    best = scorer.select_best_vlm([r for r in history.all() if r.phase == "run"], margin=refine_cfg.get("vlm_margin", 0.1))
     if best is None:
         logger.error("No candidate trained successfully in any iteration; skipping eval")
         return history
