@@ -57,7 +57,7 @@ class VLMFeedbackAgent:
         with open(path, "r") as f:
             return [{"role": "system", "content": f.read()}]
 
-    def critique_video(self, video_path: str, seed: int = None, response_format: Optional[dict] = None) -> str:
+    def critique_video(self, video_path: str, seed: int = None, response_format: Optional[dict] = None) -> dict:
         """
         Critiques a video and returns a natural language feedback.
         """
@@ -66,7 +66,7 @@ class VLMFeedbackAgent:
         logger.info("Video Critique requested. ")
         return self._call_and_parse(messages, seed=seed, response_format=response_format)
 
-    def critique_images(self, frame_paths: list[str], seed: int = None, response_format: Optional[dict] = None) -> str:
+    def critique_images(self, frame_paths: list[str], seed: int = None, response_format: Optional[dict] = None) -> dict:
         """
         Critiques a sequence of images and returns a natural language feedback.
         """
@@ -110,7 +110,7 @@ class VLMFeedbackAgent:
                 text = text.strip("`")            # drop fences
                 text = text.removeprefix("json").strip()
             data = json.loads(text)               # JSONDecodeError is a ValueError subclass
-    
+
         if data.get("score") not in (1, 2, 3):
             raise ValueError(f"Invalid score: {data.get('score')!r}")
         if not isinstance(data.get("reasoning"), str) or not data["reasoning"].strip():
