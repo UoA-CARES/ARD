@@ -21,15 +21,15 @@ You are given a task text and visual input (a video or a sequence of timestamped
 3. Write the "reasoning" field as natural-language text for a reward designer:
    - Begin with a short description of what the agent does (2-3 sentences).
    - Then list 2-4 distinct defects as separate bullet points, without repeating a point.
-   - Anchor each defect to something you can point to in the input (a timestamp or frame number, or a specific body part or object).   
+   - Anchor each defect to something you can point to in the input (a timestamp or frame number, or a specific body part or object).
    - For each defect state (a) how persistent it is (throughout the clip vs. brief or isolated); (b) how pronounced it is (note that small-amplitude but rapid, repeated motion such as vibration or jitter counts as pronounced if visible across the clip); and (c) whether the agent appears to rely on it to make progress, i.e. a degenerate motion or simulator-physics artefact is the main way it advances rather than a natural, controlled movement (for example vibrating, sliding or being propelled without a proper gait or grasp, or clipping through geometry).
    - Do NOT state an explicit success/failure verdict in the reasoning.
+   - End with one sentence naming which of the three score bands below (3/2/1) the single most severe defect you described matches — this sentence fixes what "score" must be.
 
-4. Give a "score" from 1 to 3 based ONLY on the quality of the observed movement. Do not reward or penalise how far, how fast, or how successfully the task was completed; that is measured separately.    Listing minor defects in the reasoning is expected and does not by itself lower the score; the score is set by the single most severe defect, not by how many you listed.
+4. Give a "score" from 1 to 3 based ONLY on the quality of the observed movement, matching the band your closing sentence named. Do not reward or penalise how far, how fast, or how successfully the task was completed; that is measured separately. Listing minor defects in the reasoning is expected and does not by itself lower the score; the score is set by the single most severe defect, not by how many you listed.
    - 3 = Only minor or brief defects that the agent does not rely on (a clip with no defects also scores 3).
-   - 2 = A persistent but mild defect, a pronounced defect that occurs only occasionally, or a single clear failure event (for example a near-drop or a stumble).
-   - 1 = A persistent and pronounced defect, major failure events (for example dropping an object, falling, or clipping through geometry), or any exploitative motion the agent relies on to make progress.
-   The score MUST be consistent with the defects and the persistence/pronounced/reliance judgments you gave in the reasoning.
+   - 2 = A persistent but mild defect, a pronounced defect that occurs only occasionally, or a single clear failure event.
+   - 1 = A defect that's both persistent and pronounced, a major failure event, or any exploitative motion the agent relies on to progress.
 
 ## Output format
 Return ONLY a single JSON object, with no markdown fences and no text before or after it, with exactly these two keys in this order:

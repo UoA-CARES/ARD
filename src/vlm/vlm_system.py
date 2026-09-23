@@ -67,7 +67,7 @@ class VLM:
             frame_list = self._slice_video_into_frames(self.video_path, self.sample_rate)
             feedback = self.vlm_agent.critique_images(frame_list, seed=self.seed, response_format=response_format)
 
-        return feedback
+        return self.vlm_agent._parse_response(feedback)  # Parse the response to extract the VLM score and other relevant information
 
     def save_vlm_feedback(self, feedback: str, output_dir: str):
         """

@@ -99,12 +99,18 @@ class VLMFeedbackAgent:
             raise
 
     def _parse_response(self, response: str) -> dict:
-        text = response.strip()
-        if text.startswith("```"):
-            text = text.strip("`")            # drop fences
-            text = text.removeprefix("json").strip()
-        data = json.loads(text)               # JSONDecodeError is a ValueError subclass
-
+        """
+        Parse the VLM response, ensuring it is valid JSON and contains the expected fields.
+        """
+        if isinstance(response, dict):
+            data = response
+        else:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.strip("`")            # drop fences
+                text = text.removeprefix("json").strip()
+            data = json.loads(text)               # JSONDecodeError is a ValueError subclass
+    
         if data.get("score") not in (1, 2, 3):
             raise ValueError(f"Invalid score: {data.get('score')!r}")
         if not isinstance(data.get("reasoning"), str) or not data["reasoning"].strip():
@@ -157,10 +163,16 @@ class VLMFeedbackAgent:
         return (sys_message or self.sys_message) + [{"role": "user", "content": content}]
 
     def _call_and_parse(self, messages, seed, response_format, attempts=3) -> dict:
+        """
+        Calls the VLM model and attempts to parse the response as JSON.
+        Retries up to `attempts` times if parsing fails.
+        """
         for i in range(attempts):
             raw = self._call_vlm(messages, seed=None if seed is None else seed + i,
                                 response_format=response_format)
             try:
+                if not isinstance(raw, (str, dict)):
+                    raise ValueError(f"unexpected VLM response type: {type(raw).__name__}")
                 return self._parse_response(raw)
             except ValueError as e:
                 logger.warning(f"VLM parse failed (attempt {i+1}/{attempts}): {e}")
