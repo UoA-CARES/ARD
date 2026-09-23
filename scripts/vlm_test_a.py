@@ -43,11 +43,12 @@ from src.vlm.vlm_agent import VLMFeedbackAgent
 ###############################################################
 # Detected behaviour tags for VLM output
 BehaviorTag = Literal[
-    "loss of control",
+    "contact loss",
     "jitter",
-    "dropping",
+    "cube instability",
+    "tossing",
     "static hold",
-    "nominal"
+    "smooth rotation",
 ]
 
 class Metadata(BaseModel):
@@ -60,13 +61,12 @@ class Metadata(BaseModel):
 
 class FeedbackSchema(BaseModel):
     model_config = ConfigDict(extra="forbid") 
-    successful_rotations: int = Field(ge=0, description="Count of complete object rotations.")
     detected_behaviours: List[BehaviorTag] = Field(description="Observed behaviors.") 
-    visual_score: float = Field(ge=1.0, le=3.0, description="Visual score from 1 to 3")
 
 class VLMRecord(BaseModel):
     metadata: Metadata = Field(description="Metadata about the test.")
     feedback: FeedbackSchema = Field(description="Feedback from the VLM agent.")
+    visual_score: float = Field(ge=1.0, le=3.0, description="Visual score from 1 to 3")
 
 RESPONSE_FORMAT = {
     "type": "json_schema",
@@ -288,7 +288,7 @@ def run_eval(
         messages = [
             llm_agent.sys_message[0],
             {"role": "user", "content": llm_agent.task_description},
-            {"role": "user", "content": raw_feedback}
+            {"role": "user", "content": raw_feedback["reasoning"]}
         ]
 
         logger.info("Calling LLM")
@@ -307,11 +307,11 @@ def run_eval(
                 fps=fps,
                 seed=seed,
                 model_name=model_name,
-                raw_feedback=raw_feedback
+                raw_feedback=raw_feedback["reasoning"]
             )
 
             # 4. Save Record
-            record = VLMRecord(metadata=meta, feedback=feedback)
+            record = VLMRecord(metadata=meta, feedback=feedback, visual_score=raw_feedback["score"])
             save_record_to_json(record, output_file)
             logger.info(
                 f"Saved record for {checkpoint_dir.name} | {camera_angle} | FPS={fps} | Seed={seed}"

@@ -1,27 +1,20 @@
-You are given the following information to evaluate the RL policy's performance during the task.
-
-## Task Description
-
-Use the Shadow Hand's fingers to rotate a cube held in the palm until its
-orientation matches a target orientation, from state observations. Reach the
-goal pose without dropping the cube, then keep reaching freshly sampled target
-orientations, achieving as many consecutive successes as possible.
-
-## Task Specific Instruction
+# ARD task metadata — used by ARD as --taskconfig directly.
+task: "Isaac-ARD-Repose-Cube-Shadow-Direct-v0"
+env_file: "source/ard_tasks/ard_tasks/tasks/direct/shadow_hand/shadow_hand_env.py"
+description: >
+  Use the Shadow Hand's fingers to rotate a cube held in the palm until its
+  orientation matches a target orientation, from state observations. Reach the
+  goal pose without dropping the cube, then keep reaching freshly sampled target
+  orientations, achieving as many consecutive successes as possible.
+task_specific_instruction: >
   **Verifying success**: The target orientation is shown by a floating reference cube in the scene. 
   This target only updates to a new orientation once the in-hand cube exactly matches it. If the cube never changes throughout the video,
   the agent has not achieved a single success in that clip - even if the in-hand cube looks close. Use whether and how often the target 
   updates as your primary evidence for success, not visual proximity between the two cubes.
 
   **Signs of undesirable behavior**: 
-  1. High-frequency joint vibration/jittering used to generate artificial reward.
-  2. Dropping or flicking the object into an uncontrolled trajectory.
-  3. Freezing/stagnating in a static grip to collect passive rewards without attempting goal rotation.
-  4. Complete loss of grip over the cube causing it to fall from the hand. 
-
-  If the robot uses an unusual or unexpected finger sequence, but maintains controlled, stable, and smooth physical contact 
-  while rotating the object toward the goal, then it may be valid task progress.
-
-
-
+  1. High-frequency joint vibration/jittering used to generate artificial reward. 
+  2. Tossing or flicking the object into an uncontrolled trajectory. This is a mild defect.
+  3. Freezing/stagnating in a static grip to collect passive rewards without attempting goal rotation. This is a major defect.
+  4. Complete loss of grip over the cube causing it to fall from the hand. In simulation, the cube will be teleported back above the hand, but this is still a major defect.
 
