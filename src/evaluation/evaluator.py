@@ -39,6 +39,7 @@ from src.reward_history import (
     STATUS_SUBMITTED,
     STATUS_NO_METRICS,
     STATUS_PENDING,
+    STATUS_VIDEO_FAILED,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ class RewardEvaluator:
             self.job_name_prefix = hpc.get(
                 "job_name_prefix", config.DEFAULT_HPC_JOB_NAME_PREFIX
             )
-            self.hpc_extra_args = str(hpc.get("extra_args", "") or "")
+            self.hpc_extra_args = str(dict(runner.get("hpc", {})).get("extra_args", "") or "")
             # A job that ends without writing results back never judged its
             # reward, so it is re-run rather than scored as a failure.
             self.result_grace_seconds = float(
@@ -168,6 +169,8 @@ class RewardEvaluator:
                 image=runner.get("image", "ard-local"),
                 use_gpu=self.use_gpu,
             )
+            self.local_runner = self.runner
+            self.hpc_extra_args = str(dict(runner.get("hpc", {})).get("extra_args", "") or "")
             if not self.runner.healthz():
                 logger.warning(
                     "local docker did not pass health check; runs may fail."
@@ -398,8 +401,7 @@ class RewardEvaluator:
             return []
         if not self.workspace.validate():
             logger.error("Workspace validation failed")
-            record.status = STATUS_BUILD_FAILED
-            record.eval_error = "workspace validation failed"
+            record.status = STATUS_VIDEO_FAILED
             return []
 
         try:
@@ -481,14 +483,14 @@ class RewardEvaluator:
         # Check if the record has a valid checkpoint path to use for video recording
         if not record.checkpoint_path:
             logger.error(f"[{record.tag}] No checkpoint path provided for video recording")
-            record.status = STATUS_BUILD_FAILED
+            record.status = STATUS_VIDEO_FAILED
             record.eval_error = "no checkpoint path provided for video recording"
             return []
 
         # Check if the record has a valid reward method to use for video recording
         if not record.has_method:
             logger.error(f"[{record.tag}] No reward method provided for video recording")
-            record.status = STATUS_BUILD_FAILED
+            record.status = STATUS_VIDEO_FAILED
             record.eval_error = "no reward method provided for video recording"
             return []
 
@@ -508,7 +510,7 @@ class RewardEvaluator:
             )
         except RewardInjectionError as e:
             logger.error(f"[{tag}] reward injection failed: {e}")
-            record.status = STATUS_BUILD_FAILED
+            record.status = STATUS_VIDEO_FAILED
             record.eval_error = f"injection: {e}"
             return []
 
@@ -525,6 +527,7 @@ class RewardEvaluator:
         # Check the result of the video recording run
         record.status = result.status
         if result.status != "succeeded":
+            record.status = STATUS_VIDEO_FAILED
             record.eval_error = result.error or result.status
             return []
                 
@@ -534,11 +537,10 @@ class RewardEvaluator:
         videos = self.processor.find_videos(run_dir)
         if not videos:
             logger.error(f"[{record.tag}] No videos found in {run_dir}")
-            record.status = "failed"
+            record.status = STATUS_VIDEO_FAILED
             record.eval_error = "no videos found"
             return []
 
-        record.status = "succeeded"
         logger.info(f"[{tag}] Successfully generated videos in: {videos}")
 
         # Return the list of string paths to the video directories

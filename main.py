@@ -32,7 +32,7 @@ from tqdm import tqdm
 
 from src.refinement.llm_agent import EurekaAgent
 from src.evaluation import RewardEvaluator, FitnessScorer
-from src.reward_history import RewardHistory, STATUS_GENERATED, STATUS_GEN_FAILED
+from src.reward_history import RewardHistory, STATUS_GENERATED, STATUS_GEN_FAILED, STATUS_VIDEO_FAILED, STATUS_VLM_FAILED
 from src.vlm import VLM
 
 
@@ -92,31 +92,27 @@ def resolve_task_config(task_name, tasks_repo):
         f"Available: {available}"
     )
 
-def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
+def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg) -> Optional[dict]:
     """
-    Get feedback from the VLM module for the best reward candidate.
+    Get feedback from the VLM module for a reward candidate.
 
     Args:
         vlm: The VLM instance.
         evaluator: The RewardEvaluator instance.
-        best: The best candidate record from the refinement loop.
+        record: A candidate record from the refinement loop.
         task_cfg: The task configuration dictionary.
         refine_cfg: The refinement configuration dictionary.
 
     Returns:
-        The feedback string from the VLM module, or None if feedback is not available.
+        The feedback dictionary from the VLM module, or None if feedback is not available.
     """
-    # Check if the best candidate has a valid summary path for feedback
-    if not best.summary_path or not os.path.exists(best.summary_path):
+    # Check if the candidate has a valid summary path for feedback
+    if not record.summary_path or not os.path.exists(record.summary_path):
         logger.warning("Best candidate's summary path is not available for VLM feedback.")
         return None
 
     agent_config=refine_cfg.get("vlm", {})
-    best.video_length = agent_config.get("video_length", 200)  # Default to 200 steps if not specified
-
-    # Record the videos for the best candidate
-    video_paths = evaluator.record_videos(best)
-    best.video_paths = video_paths  # Store the recorded video paths in the best record
+    record.video_length = agent_config.get("video_length", 200)  # Default to 200 steps if not specified
 
     # Get the task desc and any task-specific information for the VLM
     task_description = task_cfg["description"]
@@ -126,37 +122,38 @@ def get_vlm_feedback(evaluator, best, task_cfg, refine_cfg) -> Optional[str]:
     camera_angle = agent_config.get("camera_angle", 0)
     target_suffix = f"camera_{camera_angle}.mp4"
 
-    # Search for the video path ending with the target suffix
-    video_path = next(
-        (path for path in video_paths if path.endswith(target_suffix)), None
-    )
-
-    # Error check for video
-    if video_path is None:
-        logger.warning(
-            f"Video with suffix '{target_suffix}' not found in available videos. "
+    try:
+        # Record the videos for the best candidate
+        video_paths = evaluator.record_videos(record)
+        record.video_paths = video_paths  # Store the recorded video paths in the best record
+        # Search for the video path ending with the target suffix
+        video_path = next(
+            (path for path in video_paths if path.endswith(target_suffix)), None
         )
+        # Error check for video
+        if video_path is None:
+            logger.warning(
+                f"Video with suffix '{target_suffix}' not found in available videos. "
+            )
+            record.status = STATUS_VIDEO_FAILED
+            return None
+        
+        # Initialise VLM
+        vlm = VLM(
+            video_path=video_path,
+            task_description=task_description,
+            task_specific_information=task_specific_information,
+            agent_config=agent_config,
+            seed=record.seed,
+        )
+        feedback = vlm.send_input_to_vlm()
+    except Exception as e:
+        logger.error(f"Error during VLM feedback: {e}")
+        record.vlm_error = str(e)
+        record.status = STATUS_VLM_FAILED
         return None
 
-    # Initialise VLM
-    vlm = VLM(
-        video_path=video_path,
-        task_description=task_description,
-        task_specific_information=task_specific_information,
-        agent_config=agent_config,
-        seed=best.seed,
-    )
-
-    # Score runs (both vlm and no vlm)
-    best.vlm_score = vlm.get_score()
-
-
-    # if not refine_cfg.get("vlm_feedback", False):
-    #     logger.info("VLM feedback is disabled in the refinement configuration.")
-    #     return None
-
-    feedback = vlm.send_input_to_vlm()
-    vlm.save_vlm_feedback(feedback, os.path.dirname(best.summary_path))  # Save feedback to the same directory as training_summary.txt
+    vlm.save_vlm_feedback(feedback["reasoning"], os.path.dirname(record.summary_path))  # Save feedback to the same directory as training_summary.txt
     return feedback
 
 
@@ -259,13 +256,19 @@ def run_refinement(settings, task_cfg, refine_cfg):
             vlm_feedback = get_vlm_feedback(evaluator, record, task_cfg, refine_cfg)
             if vlm_feedback:
                 logger.info(f"VLM feedback received for record {record.index}:\n{vlm_feedback}")
-                record.vlm_response = vlm_feedback  # Store the VLM feedback in the record
+                record.vlm_response = vlm_feedback["reasoning"]  # Store the VLM feedback in the record
+                record.vlm_score = vlm_feedback["score"]  # Store the VLM score in the record
             else:
                 logger.info(f"No VLM feedback received for record {record.index}.")
 
 
         scorer.score_all(run_records)
-        best = scorer.select_best_vlm(run_records, margin=refine_cfg.get("vlm_margin", 0.1))  # Use VLM scoring with margin
+        if refine_cfg.get("vlm_feedback", False):
+            logger.info("Selecting best candidate using VLM scoring with margin")
+            best = scorer.select_best_vlm(run_records, margin=refine_cfg.get("vlm_margin", 0.1))  # Use VLM scoring with margin
+        else:
+            logger.info("Selecting best candidate using fitness scoring only")
+            best = scorer.select_best(run_records)  # Use fitness scoring only
 
         if best is None:
             logger.error("No candidate trained successfully; requesting a rewrite")
@@ -301,9 +304,16 @@ def run_refinement(settings, task_cfg, refine_cfg):
         # Today only the winner is fed back; because the history retains every
         # candidate with its summary, feeding the whole batch back later is just
         # a different read of `run_records` — no structural change needed.
-        feedback = agent.receive_feedback(
-            best.raw_response, summary_path=best.summary_path, vlm_feedback=vlm_feedback
-        )
+        if refine_cfg.get("vlm_feedback", False) and best.vlm_response:
+            logger.info("vlm_feedback is enabled; merging VLM feedback with LLM feedback")
+            feedback = agent.receive_feedback(
+                best.raw_response, summary_path=best.summary_path, vlm_feedback=best.vlm_response
+            )
+        else:
+            logger.info("vlm_feedback is disabled; using only LLM feedback")
+            feedback = agent.receive_feedback(
+                best.raw_response, summary_path=best.summary_path
+            )
         logger.info(f"Successfully merged feedback for candidate idx={best.index}")
         history.update(best, feedback_text=feedback)
         history.save_json()
@@ -316,7 +326,13 @@ def run_refinement(settings, task_cfg, refine_cfg):
     # that a later iteration discards, and still leave the final winner scored by
     # a single seed. `select_best` over every run record marks that winner (and
     # only it) as `selected_best` in the history.
-    best = scorer.select_best_vlm([r for r in history.all() if r.phase == "run"], margin=refine_cfg.get("vlm_margin", 0.1))
+    if refine_cfg.get("vlm_feedback", False):
+        logger.info("Selecting best candidate for evaluation using VLM scoring with margin")
+        best = scorer.select_best_vlm([r for r in history.all() if r.phase == "run"], margin=refine_cfg.get("vlm_margin", 0.1))  # Use VLM scoring with margin
+    else:
+        logger.info("Selecting best candidate for evaluation using fitness scoring only")
+        best = scorer.select_best([r for r in history.all() if r.phase == "run"])  # Use fitness scoring only
+
     if best is None:
         logger.error("No candidate trained successfully in any iteration; skipping eval")
         return history

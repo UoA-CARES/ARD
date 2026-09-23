@@ -107,7 +107,7 @@ class FitnessScorer:
         return best
 
     @staticmethod
-    def select_best_vlm(self, records: List, margin: float):
+    def select_best_vlm(records: List, margin: float):
         """Select the best candidate based on a combination of VLM score and fitness score, with a margin for the fitness
         
         1. Gate candidates based on fitness score: only consider candidates whose fitness is within (1-margin) of the best fitness score.
@@ -122,11 +122,30 @@ class FitnessScorer:
         for r in records:
             r.selected_best = False
 
-        # Filter out records that do not meet the gate for the fitness. Filter out records that do not have a VLM score.
-        gated = [record for record in scored if (record.fitness >= (1-margin) * max(r.fitness for r in records)) and record.vlm_score is not None]
+        if not scored:
+            logger.warning("No candidates have a VLM score")
+            return None
 
-        if not gated or scored is None:
-            logger.warning("No candidates to select from")
+        # Calculate the spread amongst candidates
+        best_fitness = max(r.fitness for r in scored)
+        spread = best_fitness - min(f.fitness for f in scored)
+        if spread == 0:
+            threshold = best_fitness  # If all candidates have the same fitness, set threshold to best fitness
+        else:
+            threshold = best_fitness - margin * spread
+
+        # Filter out records that do not meet the gate for the fitness. Filter out records that do not have a VLM score.
+        gated = []
+        for record in scored:
+            if record.vlm_score is None:
+                logger.warning(f"Candidate {record} does not have a VLM score and will be ignored in selection.")
+                continue
+            if record.fitness >= threshold:
+                gated.append(record)
+
+
+        if not gated:
+            logger.warning("No candidates meet the fitness gate")
             return None
 
         best = max(gated, key=lambda r: (r.vlm_score, r.fitness))

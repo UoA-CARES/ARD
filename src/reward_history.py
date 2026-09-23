@@ -44,6 +44,8 @@ STATUS_PENDING = "pending"          # record created, nothing attempted yet
 STATUS_GENERATED = "generated"      # LLM produced a valid compute_reward method
 STATUS_GEN_FAILED = "gen_failed"    # LLM never produced a valid method
 STATUS_BUILD_FAILED = "build_failed"   # reward injection / codebase build failed
+STATUS_VIDEO_FAILED = "video_failed"      # video recording failed (e.g. timeout, no response)
+STATUS_VLM_FAILED = "vlm_failed"        # VLM feedback failed (e.g. timeout, no response)
 STATUS_SUBMITTED = "submitted"      # dispatched to the HPC scheduler, awaiting result
 STATUS_NO_METRICS = "no_metrics"    # job ran but left no usable TensorBoard logs
 # Terminal job states (succeeded / failed / timed_out) are stored verbatim.
