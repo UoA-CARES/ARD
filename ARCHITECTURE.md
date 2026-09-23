@@ -204,19 +204,28 @@ the *old* reward, so the very first PPO updates compute advantages from a stale
 baseline and push the policy — the one thing worth transferring — in an arbitrary
 direction. The warmup lets the critic re-fit before the actor is allowed to move.
 
-What "the actor is held still" means depends on the network shape, and the
-distinction matters because the ARD tasks are the second case:
+What "the actor is held still" means depends on the network shape, and the ARD
+tasks are split across both cases:
 
 | `network.separate` | Frozen | Trains |
 | --- | --- | --- |
-| `true` | actor trunk + actor head | critic trunk + value head |
-| `false` (ARD tasks) | the **shared trunk** + actor head | the value head alone |
+| `true` (shadow_hand) | actor trunk + actor head | critic trunk + value head |
+| `false` (cartpole, shadow_hand_vision) | the **shared trunk** + actor head | the value head alone |
 
 With a shared trunk there is no critic-side trunk to train, so letting the trunk
 move would move the policy — freezing it is what makes the window actually
-critic-only. `_critic_warmup_frozen_parameters` in `a2c_common.py` expresses this
-as "every model parameter that is not the critic's", which is what puts the
-shared trunk on the right side without special-casing it.
+critic-only. But it also means the warmup can only refit a linear readout on a
+frozen representation, which is most of why shadow_hand runs separate trunks: there
+the critic can actually re-learn a representation for the new reward.
+`_critic_warmup_frozen_parameters` in `a2c_common.py` expresses the freeze as
+"every model parameter that is not the critic's", which puts the shared trunk on
+the right side without special-casing it and picks up the critic trunk under
+`separate: true` for free.
+
+Flipping `network.separate` changes the model's state_dict keys, so checkpoints do
+not carry across it in either direction. `set_weights` detects that specific
+mismatch and raises naming the cause rather than letting PyTorch report a bare list
+of missing keys.
 
 Two details that are not obvious:
 
