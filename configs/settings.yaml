@@ -38,7 +38,7 @@ runner:
   # GPU: true attaches the local GPU (docker run --gpus all); false runs
   # CPU-only. One candidate runs at a time — there is no fractional-GPU request.
   use_gpu: true
-  timeout_seconds: 7200
+  timeout_seconds: 10800
   # Extra container env applied to every job. On the local backend the entrypoint
   # reads these; on the hpc backend the scheduler DROPS the job env block, so ARD
   # translates MAX_ITERATIONS/NUM_ENVS into --max_iterations/--num_envs command
@@ -52,8 +52,14 @@ runner:
     NUM_ENVS: "8192"         # parallel envs (--num_envs) — scaled down from the task's default 8192; must be a
     # multiple of 2048 for shadow_hand specifically (batch_size = num_envs * horizon_length(16) must divide
     # evenly into minibatch_size(32768) per its rl_games_ppo_cfg.yaml, unlike cartpole which tolerated 1024)
-    plasticity: true  
-           # enables plasticity monitoring/unit-replacement (--plasticity on train.py)
+    plasticity: true
+           # enables plasticity monitoring/metrics (--plasticity on train.py); on its own
+           # this does NOT replace any units - see plasticity_injection_strategy
+    plasticity_injection_strategy: null
+           # plasticity injection (neuron replacement). null/empty = off; a strategy name
+           # (only `cbp` today) passes --plasticity_injection_strategy <name> to train.py,
+           # which sets the agent config's plasticity.replacement_enabled: true and
+           # replacement_strategy: <name>. Requires plasticity: true.
 
   # Optional `docker build --build-arg` values. LOCAL BACKEND ONLY — HPCRunner.submit
   # runs a plain `docker build` with no --build-arg, so hpc jobs silently ignore this
@@ -73,14 +79,14 @@ runner:
   # ard-isaaclab-tasks/scripts/hpc_push.sh) so `docker push` works.
   hpc:
     registry: "130.216.238.2:5500"       # CARES container registry
-    upi: ""                              # YOUR UPI — namespaces the per-user image
+    upi: "fzho027"                              # YOUR UPI — namespaces the per-user image
                                          # repo <upi>_ard-isaaclab and the NAS output
                                          # path. Leave empty to take it from $ARD_UPI
                                          # (keeps your UPI out of version control).
     # image_repo: ""                     # raw override of <upi>_ard-isaaclab, if your
                                          # registry repo has a non-standard name
     nas_outputs: "~/hpc_outputs"         # local mount of the NAS outputs share
-    max_runtime_hours: 2.0               # per-job wall-clock cap the scheduler enforces
+    max_runtime_hours: 3.0               # per-job wall-clock cap the scheduler enforces
     poll_seconds: 30                     # how often the monitor loop polls each job
     datasets: []                         # NAS datasets to mount read-only (required_datasets)
     job_name_prefix: "ard"               # job names: <prefix>_<tag> (e.g. ard_iter1_run_0)

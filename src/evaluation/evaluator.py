@@ -175,6 +175,7 @@ class RewardEvaluator:
         # _warm_start_flags below.
         self.warm_start_cfg = dict(warm_start or {})
         self._validate_critic_warmup(self.warm_start_cfg)
+        self._validate_plasticity_injection()
 
         if self.backend == "hpc":
             # Build + push each candidate's image, submit to the CARES scheduler,
@@ -342,6 +343,43 @@ class RewardEvaluator:
         """
         return bool(self.env_extra.get("plasticity", self.env_extra.get("PLASTICITY", False)))
 
+    # runner.env keys that are translated into train.py flags rather than passed
+    # through to the container env verbatim.
+    _PLASTICITY_ENV_KEYS = (
+        "plasticity",
+        "PLASTICITY",
+        "plasticity_injection_strategy",
+        "PLASTICITY_INJECTION_STRATEGY",
+    )
+
+    def _plasticity_injection_strategy(self) -> Optional[str]:
+        """The ``--plasticity_injection_strategy`` value for this job, or None.
+
+        Read from ``runner.env`` like :meth:`_plasticity_enabled`. Any value
+        turns on rl_games neuron replacement with that strategy (train.py sets
+        ``plasticity.replacement_enabled`` / ``replacement_strategy``); empty or
+        null leaves replacement off. ``plasticity`` itself only enables the
+        diagnostics, never replacement.
+        """
+        value = self.env_extra.get(
+            "plasticity_injection_strategy",
+            self.env_extra.get("PLASTICITY_INJECTION_STRATEGY"),
+        )
+        return str(value) if value else None
+
+    def _validate_plasticity_injection(self) -> None:
+        """Reject an injection strategy without plasticity before any job is built.
+
+        rl_games only replaces units inside an enabled plasticity manager, and
+        train.py refuses the combination - but only once the job is running in
+        its container, after an image build and a scheduler round trip.
+        """
+        if self._plasticity_injection_strategy() and not self._plasticity_enabled():
+            raise ValueError(
+                "runner.env.plasticity_injection_strategy "
+                f"{self._plasticity_injection_strategy()!r} requires runner.env.plasticity: true"
+            )
+
     # The refineconfig warm-start keys that map 1:1 onto scripts/train.py flags.
     # `enabled` is not among them: it is expressed by --warm_start itself.
     _WARM_START_BOOL_KEYS = (
@@ -415,14 +453,15 @@ class RewardEvaluator:
         baked in, not the path used. A checkpoint additionally brings the
         ``--warm_start`` flags from :meth:`_warm_start_flags`, which tell
         rl_games to apply it as a transfer rather than as a resume. All are
-        appended after any user-configured ``EXTRA_ARGS`` from ``runner.env``.
+        appended after any user-configured ``EXTRA_ARGS`` from ``runner.env``,
+        as is ``--plasticity_injection_strategy`` when one is configured.
         """
         env = {"TASK": self.task}
         if seed is not None:
             env["SEED"] = str(seed)
         env.update({
             k: str(v) for k, v in self.env_extra.items()
-            if k not in ("plasticity", "PLASTICITY")
+            if k not in self._PLASTICITY_ENV_KEYS
         })
         max_iterations = self._effective_max_iterations(checkpoint_path)
         if max_iterations is not None:
@@ -434,6 +473,9 @@ class RewardEvaluator:
             extra_flags.extend(self._warm_start_flags())
         if self._plasticity_enabled():
             extra_flags.append("--plasticity")
+        strategy = self._plasticity_injection_strategy()
+        if strategy:
+            extra_flags.append(f"--plasticity_injection_strategy {strategy}")
         if extra_flags:
             env["EXTRA_ARGS"] = f"{env.get('EXTRA_ARGS', '')} {' '.join(extra_flags)}".strip()
         return env
@@ -462,7 +504,8 @@ class RewardEvaluator:
         ``--warm_start`` flags from :meth:`_warm_start_flags`, matching
         ``scripts/train.py``'s own flags — pointed at the fixed in-image path
         the checkpoint was baked to (see ``_build_env``), not the host path.
-        ``plasticity`` from ``runner.env`` is likewise appended as ``--plasticity``.
+        ``plasticity`` from ``runner.env`` is likewise appended as ``--plasticity``,
+        and ``plasticity_injection_strategy`` as ``--plasticity_injection_strategy``.
         """
         flags = ["--task", self.task]
         if seed is not None:
@@ -479,6 +522,9 @@ class RewardEvaluator:
             flags += ["--num_envs", str(self.env_extra["NUM_ENVS"])]
         if self._plasticity_enabled():
             flags += ["--plasticity"]
+        strategy = self._plasticity_injection_strategy()
+        if strategy:
+            flags += ["--plasticity_injection_strategy", strategy]
 
         extra = self.hpc_extra_args
         # Vision tasks instantiate a TiledCamera, which train.py only allows with
@@ -618,6 +664,129 @@ class RewardEvaluator:
 
         return records
 
+    # -------------------------------------------------------- hpc primitives
+    # submit_record / poll_record / harvest_record are the non-blocking halves of
+    # _evaluate_hpc below, which is written in terms of them. They are public
+    # because a driver that schedules across several *batches* at once cannot use
+    # evaluate(): it submits a whole batch and blocks until the last job lands, so
+    # a straggler in one batch idles the cluster for every other. scripts/
+    # transfer_ablation.py drives these three directly to keep one global window
+    # of in-flight jobs filled from whichever batch is unblocked. Everything that
+    # touches the scheduler or the record's lifecycle lives here, so the two
+    # callers cannot drift apart.
+
+    def submit_record(
+        self, record: RewardRecord, checkpoint_path: Optional[str] = None
+    ) -> Optional[HPCJob]:
+        """Stage + inject + build + push + submit one candidate. Non-blocking.
+
+        Mutates ``record``: on success ``job_id`` and ``status`` (submitted); on
+        failure ``status`` (gen_failed / build_failed) and ``eval_error``.
+
+        Returns:
+            The job handle to poll, or None if the record never reached the
+            scheduler — in which case the record already carries the reason.
+        """
+        if not record.has_method:
+            record.status = STATUS_GEN_FAILED
+            return None
+
+        tag = record.tag
+        try:
+            tarball = self.workspace.build_codebase(
+                record.reward_method, tag, checkpoint_path
+            )
+        except RewardInjectionError as e:
+            logger.error(f"[{tag}] reward injection failed: {e}")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = f"injection: {e}"
+            return None
+
+        try:
+            # _build_hpc_command resolves the warm-start-adjusted epoch ceiling,
+            # which reads the checkpoint and can raise. evaluate() catches that
+            # batch-wide before anything is staged; a caller driving records one
+            # at a time has no such batch, so it is caught per record here.
+            command = self._build_hpc_command(record.seed, checkpoint_path)
+        except WarmStartError as e:
+            logger.error(f"[{tag}] warm start failed: {e}")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = f"warm start: {e}"
+            return None
+
+        try:
+            job = self.runner.submit(
+                tarball_path=tarball,
+                tag=tag,
+                command=command,
+                max_runtime_hours=self.max_runtime_hours,
+                datasets=self.datasets,
+                job_name=f"{self.job_name_prefix}_{tag}",
+            )
+        except HPCRunnerError as e:
+            logger.error(f"[{tag}] submit failed: {e}")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = f"submit: {e}"
+            return None
+
+        record.job_id = job.job_id
+        record.status = STATUS_SUBMITTED
+        return job
+
+    def poll_record(self, job: HPCJob) -> str:
+        """This job's current scheduler status. One request, never blocks."""
+        return self.runner.poll(job.job_id)
+
+    def harvest_record(
+        self, record: RewardRecord, job: HPCJob, status: str
+    ) -> Optional[HPCJob]:
+        """Recycle a terminal job's artifacts onto its record.
+
+        Copies the NAS output into ``<output_dir>/<tag>/`` and reads it exactly as
+        the local backend does, setting ``log_path`` / ``tb_path`` /
+        ``summary_path`` / ``checkpoint_path`` / ``status`` on the record. Fitness
+        is still :class:`FitnessScorer`'s job.
+
+        The recycle runs *before* the status check on purpose — however the job
+        ended, what matters is whether it wrote results back. A reward bad enough
+        to fail training still does; a job the cluster killed never gets the
+        chance, so an empty result means nothing was measured and it is re-run
+        instead of scored.
+
+        Returns:
+            A replacement job handle when the job came back empty and was
+            resubmitted (the caller should keep polling that one instead), else
+            None — the record is finished, successfully or not.
+        """
+        work_dir = os.path.join(self.output_dir, record.tag)
+        if os.path.exists(work_dir):
+            shutil.rmtree(work_dir, ignore_errors=True)
+        collected = self.runner.collect(
+            job.job_id, work_dir, self.result_grace_seconds
+        )
+        if collected is None:
+            return self._retry_no_results(record, job, status)
+
+        if status != "completed":
+            logger.warning(f"[{record.tag}] job {job.job_id} {status}")
+            record.status = "failed"
+            record.eval_error = f"hpc job {status}"
+            return None
+
+        captured = self.processor.capture(work_dir)
+        if captured is None:
+            record.status = STATUS_NO_METRICS
+            record.eval_error = "no usable TensorBoard logs"
+            return None
+
+        record.log_path = captured.log_path
+        record.tb_path = captured.tb_path
+        record.summary_path = captured.summary_path
+        record.checkpoint_path = captured.checkpoint_path
+        record.status = "succeeded"
+        logger.info(f"[{record.tag}] completed and captured")
+        return None
+
     # ------------------------------------------------------------- hpc backend
     def _evaluate_hpc(
         self, records: List[RewardRecord], checkpoint_path: Optional[str] = None
@@ -651,35 +820,9 @@ class RewardEvaluator:
         handles: Dict[str, RewardRecord] = {}   # job_id -> record
         jobs: Dict[str, HPCJob] = {}            # job_id -> handle (for resubmit)
         for record in records:
-            if not record.has_method:
-                record.status = STATUS_GEN_FAILED
-                continue
-            tag = record.tag
-            try:
-                tarball = self.workspace.build_codebase(
-                    record.reward_method, tag, checkpoint_path
-                )
-            except RewardInjectionError as e:
-                logger.error(f"[{tag}] reward injection failed: {e}")
-                record.status = STATUS_BUILD_FAILED
-                record.eval_error = f"injection: {e}"
-                continue
-            try:
-                job = self.runner.submit(
-                    tarball_path=tarball,
-                    tag=tag,
-                    command=self._build_hpc_command(record.seed, checkpoint_path),
-                    max_runtime_hours=self.max_runtime_hours,
-                    datasets=self.datasets,
-                    job_name=f"{self.job_name_prefix}_{tag}",
-                )
-            except HPCRunnerError as e:
-                logger.error(f"[{tag}] submit failed: {e}")
-                record.status = STATUS_BUILD_FAILED
-                record.eval_error = f"submit: {e}"
-                continue
-            record.job_id = job.job_id
-            record.status = STATUS_SUBMITTED
+            job = self.submit_record(record, checkpoint_path)
+            if job is None:
+                continue  # submit_record already recorded why
             handles[job.job_id] = record
             jobs[job.job_id] = job
 
@@ -695,49 +838,18 @@ class RewardEvaluator:
         outstanding = set(handles)
         while outstanding:
             for job_id in list(outstanding):
-                status = self.runner.poll(job_id)
+                job = jobs[job_id]
+                status = self.poll_record(job)
                 if not self.runner.is_terminal(status):
                     continue
                 outstanding.discard(job_id)
                 record = handles[job_id]
-
-                # Recycle: copy the NAS artifacts into the job's work dir, then
-                # read them exactly as the local backend does. This runs before
-                # the status check on purpose — however the job ended, what
-                # matters is whether it wrote results back. A reward bad enough
-                # to fail training still does; a job the cluster killed never
-                # gets the chance, so an empty result means nothing was
-                # measured and it is re-run instead of scored.
-                work_dir = os.path.join(self.output_dir, record.tag)
-                if os.path.exists(work_dir):
-                    shutil.rmtree(work_dir, ignore_errors=True)
-                collected = self.runner.collect(
-                    job_id, work_dir, self.result_grace_seconds
-                )
-                if collected is None:
-                    retry = self._retry_no_results(record, jobs[job_id], status)
-                    if retry is not None:
-                        handles[retry.job_id] = record
-                        jobs[retry.job_id] = retry
-                        outstanding.add(retry.job_id)
-                    continue
-
-                if status != "completed":
-                    logger.warning(f"[{record.tag}] job {job_id} {status}")
-                    record.status = "failed"
-                    record.eval_error = f"hpc job {status}"
-                    continue
-                captured = self.processor.capture(work_dir)
-                if captured is None:
-                    record.status = STATUS_NO_METRICS
-                    record.eval_error = "no usable TensorBoard logs"
-                    continue
-                record.log_path = captured.log_path
-                record.tb_path = captured.tb_path
-                record.summary_path = captured.summary_path
-                record.checkpoint_path = captured.checkpoint_path
-                record.status = "succeeded"
-                logger.info(f"[{record.tag}] completed and captured")
+                retry = self.harvest_record(record, job, status)
+                if retry is not None:
+                    # Came back empty and was resubmitted; follow the new job id.
+                    handles[retry.job_id] = record
+                    jobs[retry.job_id] = retry
+                    outstanding.add(retry.job_id)
             if outstanding:
                 time.sleep(self.poll_seconds)
 

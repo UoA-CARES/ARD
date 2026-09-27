@@ -1,0 +1,62 @@
+# Iteration-2 arms for scripts/transfer_ablation.py.
+#
+# The ablation is two iterations long. Iteration 1 is a plain ARD start: the base
+# configs, cold, `agent.sample` candidates. Iteration 2 then forks into the arms
+# below, every arm training the *same* LLM-generated rewards as each other, so the
+# only thing separating two arms is what this file overrides — the network
+# transfer settings.
+#
+# Each list item is one arm:
+#   name          optional label; becomes a directory + job-tag component. Derived
+#                 from the overrides when omitted, and must be unique.
+#   refineconfig  overrides merged onto configs/refineconfig.yaml
+#   settings      overrides merged onto configs/settings.yaml
+#
+# Every field named here must ALREADY EXIST in the config it overrides — a typo
+# raises rather than silently adding a key no code reads. The knobs below are
+# real fields today: `warm_start.*` in refineconfig.yaml and
+# `runner.env.plasticity` / `runner.env.plasticity_injection_strategy` in
+# settings.yaml.
+#
+# `plasticity: true` is set in every arm and only turns on the plasticity
+# metrics/logging — it does not replace any units. Replacement (plasticity
+# injection) is turned on solely by `plasticity_injection_strategy`, which is the
+# one difference between `warm_start` and `warm_start_cbp`.
+#
+# Job count = n_seeds * agent.sample * (1 + len(this list)).
+
+# The control arm: iteration 2 run cold, exactly like iteration 1, so the warm
+# arms are measured against a second cold iteration rather than against
+# iteration 1 (whose candidates the LLM wrote without any feedback).
+- name: baseline
+  refineconfig:
+    warm_start:
+      enabled: false
+  settings:
+    runner:
+      env:
+        plasticity: true
+        plasticity_injection_strategy: null
+
+- name: warm_start
+  refineconfig:
+    warm_start:
+      enabled: true
+      critic_warmup_epoch_count: 250
+  settings:
+    runner:
+      env:
+        plasticity: true
+        plasticity_injection_strategy: null
+
+# Warm start plus CBP (continual backprop) neuron replacement.
+- name: warm_start_cbp
+  refineconfig:
+    warm_start:
+      enabled: true
+      critic_warmup_epoch_count: 250
+  settings:
+    runner:
+      env:
+        plasticity: true
+        plasticity_injection_strategy: cbp
