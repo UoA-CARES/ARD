@@ -154,6 +154,9 @@ class RewardEvaluator:
         # Optional override of the image CMD. Default None -> the image's own
         # entrypoint runs, configured entirely through `env`.
         self.command_template = runner.get("command_template")
+        # Overrides of the task's rl_games agent yaml (e.g. params.config.betas),
+        # rendered once into Hydra `agent.<path>=<value>` args for train.py.
+        self.agent_override_args = self.hydra_agent_overrides(runner.get("agent_overrides"))
 
         self.backend = str(runner.get("backend", config.DEFAULT_BACKEND)).lower()
 
@@ -380,6 +383,53 @@ class RewardEvaluator:
                 f"{self._plasticity_injection_strategy()!r} requires runner.env.plasticity: true"
             )
 
+    @classmethod
+    def _hydra_value(cls, value) -> str:
+        """One YAML leaf in Hydra's command-line override grammar.
+
+        Lists render without spaces: the local backend's EXTRA_ARGS is
+        word-split by pcs_entrypoint.sh, so a space would break one override
+        into two arguments.
+        """
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return "null"
+        if isinstance(value, (int, float)):
+            return repr(value)
+        if isinstance(value, (list, tuple)):
+            return "[" + ",".join(cls._hydra_value(v) for v in value) + "]"
+        if isinstance(value, str):
+            # Quote anything Hydra's grammar would otherwise parse as structure.
+            if value and not any(c in value for c in " ,[]{}()=:'\"\\$"):
+                return value
+            return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        raise ValueError(
+            f"runner.agent_overrides: unsupported value {value!r} "
+            f"({type(value).__name__}); use a scalar or a list"
+        )
+
+    @classmethod
+    def hydra_agent_overrides(cls, overrides: Optional[Dict], path: str = "agent") -> List[str]:
+        """Flatten ``runner.agent_overrides`` into train.py Hydra args.
+
+        ``overrides`` mirrors the task's rl_games agent yaml from its top-level
+        ``params:`` down, so ``{"params": {"config": {"weight_decay": 0.0}}}``
+        becomes ``agent.params.config.weight_decay=0.0``. train.py forwards
+        every argument it does not recognise to IsaacLab's Hydra wrapper, which
+        exposes the agent yaml as ``agent``. Hydra itself rejects a key that is
+        not already in the yaml, but only inside the running job - callers that
+        can see the yaml (scripts/transfer_ablation.py) validate up front.
+        """
+        args: List[str] = []
+        for key, value in (overrides or {}).items():
+            here = f"{path}.{key}"
+            if isinstance(value, dict):
+                args.extend(cls.hydra_agent_overrides(value, here))
+            else:
+                args.append(f"{here}={cls._hydra_value(value)}")
+        return args
+
     # The refineconfig warm-start keys that map 1:1 onto scripts/train.py flags.
     # `enabled` is not among them: it is expressed by --warm_start itself.
     _WARM_START_BOOL_KEYS = (
@@ -454,7 +504,8 @@ class RewardEvaluator:
         ``--warm_start`` flags from :meth:`_warm_start_flags`, which tell
         rl_games to apply it as a transfer rather than as a resume. All are
         appended after any user-configured ``EXTRA_ARGS`` from ``runner.env``,
-        as is ``--plasticity_injection_strategy`` when one is configured.
+        as is ``--plasticity_injection_strategy`` when one is configured, and
+        any ``runner.agent_overrides`` as Hydra ``agent.<path>=<value>`` args.
         """
         env = {"TASK": self.task}
         if seed is not None:
@@ -476,6 +527,7 @@ class RewardEvaluator:
         strategy = self._plasticity_injection_strategy()
         if strategy:
             extra_flags.append(f"--plasticity_injection_strategy {strategy}")
+        extra_flags.extend(self.agent_override_args)
         if extra_flags:
             env["EXTRA_ARGS"] = f"{env.get('EXTRA_ARGS', '')} {' '.join(extra_flags)}".strip()
         return env
@@ -506,6 +558,7 @@ class RewardEvaluator:
         the checkpoint was baked to (see ``_build_env``), not the host path.
         ``plasticity`` from ``runner.env`` is likewise appended as ``--plasticity``,
         and ``plasticity_injection_strategy`` as ``--plasticity_injection_strategy``.
+        ``runner.agent_overrides`` rides last, as Hydra ``agent.<path>=<value>`` args.
         """
         flags = ["--task", self.task]
         if seed is not None:
@@ -525,6 +578,7 @@ class RewardEvaluator:
         strategy = self._plasticity_injection_strategy()
         if strategy:
             flags += ["--plasticity_injection_strategy", strategy]
+        flags += self.agent_override_args
 
         extra = self.hpc_extra_args
         # Vision tasks instantiate a TiledCamera, which train.py only allows with

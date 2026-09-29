@@ -11,9 +11,18 @@
 #                 from the overrides when omitted, and must be unique.
 #   refineconfig  overrides merged onto configs/refineconfig.yaml
 #   settings      overrides merged onto configs/settings.yaml
+#   agent         overrides of the task's rl_games agent yaml
+#                 (<task>/agents/rl_games_*.yaml in ard-isaaclab-tasks, e.g.
+#                 shadow_hand/agents/rl_games_ppo_cfg.yaml), written from its
+#                 top-level `params:` down. Sent to train.py as Hydra overrides
+#                 (agent.params.config.weight_decay=0.0 ...), so the image's yaml
+#                 is left untouched. Use it for optimizer / PPO knobs such as
+#                 betas and weight_decay; plasticity and warm start keep their
+#                 own fields above rather than going through here.
 #
-# Every field named here must ALREADY EXIST in the config it overrides — a typo
-# raises rather than silently adding a key no code reads. The knobs below are
+# Every field named here must ALREADY EXIST in the config it overrides (for
+# `agent`, the task's rl_games yaml) — a typo raises rather than silently
+# adding a key no code reads. The knobs below are
 # real fields today: `warm_start.*` in refineconfig.yaml and
 # `runner.env.plasticity` / `runner.env.plasticity_injection_strategy` in
 # settings.yaml.
@@ -60,3 +69,26 @@
       env:
         plasticity: true
         plasticity_injection_strategy: cbp
+  agent:
+    params:
+      config:
+        weight_decay: 1.0e-4
+        betas: [0.99, 0.99]
+
+# Example: an optimizer variant of the warm_start arm. `agent:` mirrors the
+# task's rl_games_ppo_cfg.yaml from `params:` down.
+# - name: warm_start_adam_default
+#   refineconfig:
+#     warm_start:
+#       enabled: true
+#       critic_warmup_epoch_count: 250
+#   settings:
+#     runner:
+#       env:
+#         plasticity: true
+#         plasticity_injection_strategy: null
+#   agent:
+#     params:
+#       config:
+#         weight_decay: 0.0
+#         betas: [0.9, 0.999]

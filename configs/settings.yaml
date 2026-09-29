@@ -61,6 +61,20 @@ runner:
            # which sets the agent config's plasticity.replacement_enabled: true and
            # replacement_strategy: <name>. Requires plasticity: true.
 
+  # Optional overrides of the task's rl_games agent yaml (agents/rl_games_*.yaml
+  # in the task dir), written from its top-level `params:` down. Each leaf is
+  # passed to train.py as a Hydra override (agent.params.config.weight_decay=0.0),
+  # on both backends. Keys must already exist in the yaml - Hydra rejects new
+  # ones, but only once the job is running. transfer_ablation.py arms set this
+  # through their own `agent:` block, which is validated up front.
+  # agent_overrides:
+  #   params:
+  #     config:
+  #       weight_decay: 0.0
+  #       betas:
+  #         - 0.9
+  #         - 0.999
+
   # Optional `docker build --build-arg` values. LOCAL BACKEND ONLY — HPCRunner.submit
   # runs a plain `docker build` with no --build-arg, so hpc jobs silently ignore this
   # and keep building the Dockerfile's defaults.

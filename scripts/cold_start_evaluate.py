@@ -352,6 +352,7 @@ def preview_hpc_command(task: str, runner_cfg: Dict, seed: Optional[int]) -> str
     stub.task = task
     stub.env_extra = dict(runner_cfg.get("env", {}) or {})
     stub.hpc_extra_args = str((runner_cfg.get("hpc", {}) or {}).get("extra_args", "") or "")
+    stub.agent_override_args = RewardEvaluator.hydra_agent_overrides(runner_cfg.get("agent_overrides"))
     return RewardEvaluator._build_hpc_command(stub, seed, None)
 
 
@@ -359,13 +360,24 @@ def parse_flags(command: str) -> Dict[str, object]:
     """Flag -> value (True when valueless) for the comparable part of a job command."""
     tokens = shlex.split(command)
     flags: Dict[str, object] = {}
+
+    def is_hydra_override(tok: str) -> bool:
+        # runner.agent_overrides ride as bare `agent.<path>=<value>` args.
+        return not tok.startswith("--") and "=" in tok
+
     i = 0
     while i < len(tokens):
         token = tokens[i]
+        if is_hydra_override(token):
+            key, value = token.split("=", 1)
+            flags[key] = value
+            i += 1
+            continue
         if not token.startswith("--"):
             i += 1
             continue
-        if i + 1 < len(tokens) and not tokens[i + 1].startswith("--"):
+        if (i + 1 < len(tokens) and not tokens[i + 1].startswith("--")
+                and not is_hydra_override(tokens[i + 1])):
             flags[token] = tokens[i + 1]
             i += 2
         else:

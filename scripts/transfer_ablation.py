@@ -52,6 +52,7 @@ import copy
 import logging
 import argparse
 import difflib
+import glob
 from dataclasses import dataclass, field
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -106,9 +107,28 @@ class AblationConfigError(RuntimeError):
 
 
 # --------------------------------------------------------------------- config
-# The keys an arm may carry, mapped to the base config each one overrides. Adding
-# a third config here is the only change needed to let arms override it too.
-_OVERRIDABLE = ("refineconfig", "settings")
+# The keys an arm may carry, mapped to the base config each one overrides.
+# `agent` is the task's rl_games agent yaml (validated against it, then sent to
+# train.py as Hydra overrides via settings.runner.agent_overrides).
+_OVERRIDABLE = ("refineconfig", "settings", "agent")
+
+
+def find_agent_yaml(tasks_repo: str, env_file_rel: str) -> str:
+    """The task's rl_games agent yaml: agents/rl_games_*.yaml beside its env file.
+
+    Named by the task's `rl_games_cfg_entry_point` - rl_games_ppo_cfg.yaml for
+    most tasks, rl_games_ppo_vision_cfg.yaml for shadow_hand_vision - so this
+    globs rather than hard-coding a name, and insists on exactly one match.
+    """
+    agents_dir = os.path.join(
+        os.path.expanduser(tasks_repo), os.path.dirname(env_file_rel), "agents")
+    matches = sorted(glob.glob(os.path.join(agents_dir, "rl_games_*.yaml")))
+    if len(matches) != 1:
+        raise AblationConfigError(
+            f"expected exactly one rl_games_*.yaml in {agents_dir} to validate "
+            f"`agent:` overrides against, found {len(matches)}: {matches}"
+        )
+    return matches[0]
 
 
 def _merge_overrides(base: dict, overrides: dict, arm: str, target: str, path: str = ""):
@@ -148,6 +168,9 @@ def _slug(overrides: dict, path: str = "") -> str:
     for key, value in sorted(overrides.items()):
         if isinstance(value, dict):
             parts.append(_slug(value, key))
+        elif isinstance(value, (list, tuple)):
+            # e.g. betas: [0.9, 0.999] -> betas_0.9_0.999 (no spaces or brackets)
+            parts.append(f"{key}_" + "_".join(str(v) for v in value))
         else:
             parts.append(f"{key}_{value}")
     return "-".join(p for p in parts if p) or "default"
@@ -172,6 +195,10 @@ class ArmSpec:
         return bool(env.get("plasticity", env.get("PLASTICITY", False)))
 
     @property
+    def agent_overrides(self) -> dict:
+        return self.settings.get("runner", {}).get("agent_overrides") or {}
+
+    @property
     def injection(self) -> Optional[str]:
         env = self.settings.get("runner", {}).get("env", {}) or {}
         value = env.get("plasticity_injection_strategy",
@@ -179,9 +206,15 @@ class ArmSpec:
         return str(value) if value else None
 
 
-def load_arms(path: str, base_settings: dict, base_refine: dict) -> List[ArmSpec]:
-    """Read and validate configs/transfer_ablation_config.yaml into ArmSpecs."""
+def load_arms(path: str, base_settings: dict, base_refine: dict,
+              agent_yaml: Optional[str] = None) -> List[ArmSpec]:
+    """Read and validate configs/transfer_ablation_config.yaml into ArmSpecs.
+
+    `agent_yaml` is the task's rl_games agent config; required only when an arm
+    carries an `agent:` block, which is checked against it key by key.
+    """
     raw = load_yaml_config(path)
+    base_agent: Optional[dict] = None
     if not isinstance(raw, list) or not raw:
         raise AblationConfigError(
             f"{path} must be a non-empty list of arms, got "
@@ -220,6 +253,26 @@ def load_arms(path: str, base_settings: dict, base_refine: dict) -> List[ArmSpec
                     f"{type(block).__name__}"
                 )
             _merge_overrides(dest, block, name, target)
+
+        agent_block = overrides.get("agent")
+        if agent_block is not None:
+            if not isinstance(agent_block, dict):
+                raise AblationConfigError(
+                    f"arm {name!r}: 'agent' must be a mapping, got "
+                    f"{type(agent_block).__name__}"
+                )
+            if base_agent is None:
+                if agent_yaml is None:
+                    raise AblationConfigError(
+                        f"arm {name!r} overrides 'agent' but no agent yaml was given"
+                    )
+                base_agent = load_yaml_config(agent_yaml)
+            # Merged into a throwaway copy purely to validate the paths: the
+            # job receives only the overrides, and Hydra applies them to the
+            # yaml baked into the image.
+            _merge_overrides(copy.deepcopy(base_agent), agent_block, name,
+                             os.path.splitext(os.path.basename(agent_yaml))[0])
+            settings["runner"]["agent_overrides"] = copy.deepcopy(agent_block)
         arms.append(ArmSpec(name, settings, refine_cfg, overrides))
 
     names = [a.name for a in arms]
@@ -658,7 +711,8 @@ def build_report(board: ProgressBoard, task: str, run_id: str) -> dict:
         "max_sent_runs": MAX_SENT_RUNS,
         "arms": [
             {"name": a.name, "warm_start": a.warm, "plasticity": a.plasticity,
-             "plasticity_injection": a.injection, "overrides": a.overrides}
+             "plasticity_injection": a.injection, "agent_overrides": a.agent_overrides,
+             "overrides": a.overrides}
             for a in board.arms
         ],
         "seeds": {},
@@ -741,6 +795,7 @@ def preview_command(task: str, runner_cfg: dict, warm_start_cfg: dict,
     stub.env_extra = dict(runner_cfg.get("env", {}) or {})
     stub.hpc_extra_args = str((runner_cfg.get("hpc", {}) or {}).get("extra_args", "") or "")
     stub.warm_start_cfg = dict(warm_start_cfg or {})
+    stub.agent_override_args = RewardEvaluator.hydra_agent_overrides(runner_cfg.get("agent_overrides"))
     placeholder = "<iteration-1 winner checkpoint>"
     stub._epoch_cache = {placeholder: 0}
     return RewardEvaluator._build_hpc_command(stub, seed, placeholder if warm else None)
@@ -771,7 +826,8 @@ def dry_run(seeds: List[int], arms: List[ArmSpec], task_cfg: dict,
         normalize_warm_start_cfg(base_refine), seeds[0], warm=False))
     for arm in arms:
         print(f"\narm {arm.name!r} (warm_start={arm.warm}, plasticity={arm.plasticity}, "
-              f"plasticity_injection={arm.injection}):")
+              f"plasticity_injection={arm.injection}, "
+              f"agent_overrides={RewardEvaluator.hydra_agent_overrides(arm.agent_overrides)}):")
         print("  " + preview_command(
             task_cfg["task"], arm.settings["runner"],
             normalize_warm_start_cfg(arm.refine_cfg), seeds[0], warm=arm.warm))
@@ -811,7 +867,8 @@ def main() -> int:
     base_settings = load_yaml_config(args.settings)
     base_refine = load_yaml_config(args.refineconfig)
     task_cfg = load_yaml_config(resolve_task_config(args.task, base_settings["tasks_repo"]))
-    arms = load_arms(args.ablation_config, base_settings, base_refine)
+    agent_yaml = find_agent_yaml(base_settings["tasks_repo"], task_cfg["env_file"])
+    arms = load_arms(args.ablation_config, base_settings, base_refine, agent_yaml)
     samples = int(base_refine.get("agent", {}).get("sample", 4))
 
     if args.dry_run:
@@ -842,7 +899,8 @@ def main() -> int:
     with open(os.path.join(root, "transfer_ablation_config.yaml"), "w") as fh:
         yaml.safe_dump(
             [{"name": a.name, "warm_start": a.warm, "plasticity": a.plasticity,
-              "plasticity_injection": a.injection, "overrides": a.overrides}
+              "plasticity_injection": a.injection, "agent_overrides": a.agent_overrides,
+              "overrides": a.overrides}
              for a in arms],
             fh, sort_keys=False,
         )
