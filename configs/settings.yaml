@@ -30,7 +30,7 @@ build_root: "./runs/_codebases"
 #                    CONCURRENTLY on the cluster. Artifacts land on the NAS and are
 #                    recycled into ./runs as each job finishes.
 runner:
-  backend: local            # local | hpc
+  backend: hpc            # local | hpc
 
   # --- local backend --------------------------------------------------------
   # Docker image repo (per-job tags are appended per candidate).

@@ -1,7 +1,7 @@
 # Eureka refinement parameters
 # Trainings per task = iteration * agent.sample + num_eval
-iteration: 1    # how many refinement iterations to run
-num_eval: 1     # seeds the run's best reward is re-trained on, once, after the loop
+iteration: 5    # how many refinement iterations to run
+num_eval: 2     # seeds the run's best reward is re-trained on, once, after the loop
 base_seed: 42   # eval-phase seeds are base_seed + k + 1 (passed to each job as env SEED -> train.py --seed)
 max_workers: 48
 warm_start: False  # resume each iteration's jobs from the previous iteration's best checkpoint (cold start on iteration 1)
@@ -15,7 +15,7 @@ agent:
 # anthropic/claude-sonnet-4.5
   model: "qwen/qwen3-coder-30b-a3b-instruct"   #  "x-ai/grok-code-fast-1" # 'deepseek/deepseek-r1:free' # "anthropic/claude-3.7-sonnet:thinking"
   base_url: "https://openrouter.ai/api/v1"
-  sample: 3        # reward candidates generated per iteration (the run phase)
+  sample: 10        # reward candidates generated per iteration (the run phase)
   temperature: 1.0  # LLM sampling temperature (raised for exploration variety)
   top_p: 0.95       # nucleus sampling; <1.0 widens the candidate distribution
   # Each candidate also gets a distinct sampler seed to diversify the batch beyond
@@ -37,7 +37,7 @@ vlm:
   video_length: 200     # length of the video clip to record for evaluation (in steps, default is 200)
   sample_rate: 8        # sample rate for video recording (frames per second)
   frame_cap: 1000       # maximum number of frames to process (to avoid excessive memory usage)    
-  camera_angle: 0       # 0: default (isometric facing right), 1: opposite (isometric facing left), 2: front, 3: top down view  
+  camera_angle: 1       # 0: default (isometric facing right), 1: opposite (isometric facing left), 2: front, 3: top down view  
 
   logging:
     jsonl_enabled: true

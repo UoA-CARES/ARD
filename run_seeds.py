@@ -35,8 +35,8 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent
-# DEFAULT_TASK = "Isaac-ARD-Repose-Cube-Shadow-Direct-v0"
-DEFAULT_TASK = "Isaac-ARD-Humanoid-Direct-v0"
+DEFAULT_TASK = "Isaac-ARD-Repose-Cube-Shadow-Direct-v0"
+# DEFAULT_TASK = "Isaac-ARD-Humanoid-Direct-v0"
 DEFAULT_SEEDS = [50]
 
 logging.basicConfig(

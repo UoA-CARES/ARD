@@ -22,14 +22,14 @@ You are given a task text and visual input (a video or a sequence of timestamped
    - Begin with a short description of what the agent does (2-3 sentences).
    - Then list 2-4 distinct defects as separate bullet points, without repeating a point.
    - Anchor each defect to something you can point to in the input (a timestamp or frame number, or a specific body part or object).
-   - For each defect state (a) how persistent it is (throughout the clip vs. brief or isolated); (b) how pronounced it is (note that small-amplitude but rapid, repeated motion such as vibration or jitter counts as pronounced if visible across the clip); and (c) whether the agent appears to rely on it to make progress, i.e. a degenerate motion or simulator-physics artefact is the main way it advances rather than a natural, controlled movement (for example vibrating, sliding or being propelled without a proper gait or grasp, or clipping through geometry).
+   - For each defect state: (a) its severity tier as given in the task text (minor / mild / major); (b) only if the task text marks that tier as escalation-eligible, whether this occurrence is pronounced enough to escalate it one tier — small-amplitude but rapid, repeated motion (e.g. ordinary buzzy vibration) does NOT count as escalated, only a clearly larger or more violent version of the defect does; (c) how persistent it is (throughout the clip vs. brief or isolated); and (d) whether the agent appears to rely on it to make progress, i.e. a degenerate motion or simulator-physics artefact is the main way it advances rather than a natural, controlled movement (for example vibrating, sliding or being propelled without a proper gait or grasp, or clipping through geometry).
    - Do NOT state an explicit success/failure verdict in the reasoning.
-   - End with one sentence naming which of the three score bands below (3/2/1) the single most severe defect you described matches — this sentence fixes what "score" must be.
+   - End with one sentence naming the single most severe defect's effective tier (its base tier, after any escalation from (b)) and whether it is persistent or brief/isolated — this sentence fixes what "score" must be.
 
-4. Give a "score" from 1 to 3 based ONLY on the quality of the observed movement, matching the band your closing sentence named. Do not reward or penalise how far, how fast, or how successfully the task was completed; that is measured separately. Listing minor defects in the reasoning is expected and does not by itself lower the score; the score is set by the single most severe defect, not by how many you listed.
-   - 3 = Only minor or brief defects that the agent does not rely on (a clip with no defects also scores 3).
-   - 2 = A persistent but mild defect, a pronounced defect that occurs only occasionally, or a single clear failure event.
-   - 1 = A defect that's both persistent and pronounced, a major failure event, or any exploitative motion the agent relies on to progress.
+4. Give a "score" from 1 to 3 using ONLY the effective tier and persistence of the single most severe defect named in your closing sentence — not how many defects you listed, and not how far, fast, or successfully the task was completed (that is measured separately).
+   - 3 = effective tier is minor AND brief/isolated (a clip with no defects also scores 3).
+   - 2 = effective tier is minor AND persistent, OR effective tier is mild AND brief/occasional.
+   - 1 = effective tier is mild AND persistent, OR effective tier is major (regardless of persistence), OR any defect of any tier that the agent relies on to make progress.
 
 ## Output format
 Return ONLY a single JSON object, with no markdown fences and no text before or after it, with exactly these two keys in this order:
