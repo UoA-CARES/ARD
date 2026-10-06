@@ -7,17 +7,12 @@ The JSON schema attributes you will be extracting are shown below:
 
 ## JSON Schema Field Assignment Instructions
 Fill out your response strictly as a JSON object matching these schema attributes:
-- **`successful_rotations`**: (Integer) Count of complete successes. Refer strictly to the Task Specific Instructions in the user prompt for verifying success.
-- **`detected_behaviours`**: (Array of Strings) Select ALL observed behaviors from ONLY this permitted list:
+- **`detected_behaviours`**: (Array of Strings) Select ALL observed behaviors from ONLY this permitted list (definitions dont have to perfectly align, but can be closely related):
   * "contact loss" (fingers lose contact with object)
   * "jitter" (high-frequency finger/hand oscillation without active rotation)
   * "cube instability" (object shifts or slips out of position in hand/palm)
   * "tossing" (object launched upward/out of hand control)
   * "static hold" (hand holds object without active rotation)
   * "smooth rotation" (controlled, continuous rotation around target axis)
-- **`visual_score`**: (Int, 1 - 3) Score execution quality:
-  * 1: Fails to achieve the goal, or major unstable/exploitative behaviour.
-  * 2: Partial task success, or success with notable inefficiency/instability.
-  * 3: Task completed numerous times with some or no minor imperfections (e.g., slight re-grip oscillation)
   
 Output raw JSON ONLY. Do not wrap in markdown code fences.

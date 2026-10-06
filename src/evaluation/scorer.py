@@ -107,6 +107,53 @@ class FitnessScorer:
         return best
 
     @staticmethod
+    def select_best_vlm(records: List, margin: float):
+        """Select the best candidate based on a combination of VLM score and fitness score, with a margin for the fitness
+        
+        1. Gate candidates based on fitness score: only consider candidates whose fitness is within (1-margin) of the best fitness score.
+        2. Among the gated candidates, select the one with the highest VLM score.
+        3. If there are multiple candidates with the same highest VLM score, select the one with the highest fitness score among them.
+        4. Return the selected candidate.
+        """
+
+        # Get a list of all scored records
+        scored = [r for r in records if isfinite(r.fitness)]
+        # Clear the selected_best flag for all records and set it for the best candidate
+        for r in records:
+            r.selected_best = False
+
+        if not scored:
+            logger.warning("No candidates have a VLM score")
+            return None
+
+        # Calculate the spread amongst candidates
+        best_fitness = max(r.fitness for r in scored)
+        spread = best_fitness - min(f.fitness for f in scored)
+        if spread == 0:
+            threshold = best_fitness  # If all candidates have the same fitness, set threshold to best fitness
+        else:
+            threshold = best_fitness - margin * spread
+
+        # Filter out records that do not meet the gate for the fitness. Filter out records that do not have a VLM score.
+        gated = []
+        for record in scored:
+            if record.vlm_score is None:
+                logger.warning(f"Candidate {record} does not have a VLM score and will be ignored in selection.")
+                continue
+            if record.fitness >= threshold:
+                gated.append(record)
+
+
+        if not gated:
+            logger.warning("No candidates meet the fitness gate")
+            return None
+
+        best = max(gated, key=lambda r: (r.vlm_score, r.fitness))
+        best.selected_best = True
+        logger.info(f"Best candidate based on VLM and fitness: {best}")
+        return best 
+
+    @staticmethod
     def summarise(records: List) -> Tuple[List[float], float, float]:
         """
         Return ``(values, mean, std)`` over ``records`` — one reward's eval seeds.
