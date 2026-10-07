@@ -42,6 +42,8 @@ import subprocess
 from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 
+import httpx
+
 from . import config
 
 logger = logging.getLogger(__name__)
@@ -334,6 +336,9 @@ class HPCRunner:
             data = self.client.job(job_id)
         except HPCClientError as e:
             logger.warning(f"[{job_id}] status poll failed: {e}")
+            return "unknown"
+        except httpx.HTTPError as e:
+            logger.warning(f"[{job_id}] status poll failed (network): {e}")
             return "unknown"
         job = data.get("job", data) if isinstance(data, dict) else {}
         status = job.get("status", "unknown")

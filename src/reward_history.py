@@ -44,6 +44,8 @@ STATUS_PENDING = "pending"          # record created, nothing attempted yet
 STATUS_GENERATED = "generated"      # LLM produced a valid compute_reward method
 STATUS_GEN_FAILED = "gen_failed"    # LLM never produced a valid method
 STATUS_BUILD_FAILED = "build_failed"   # reward injection / codebase build failed
+STATUS_VIDEO_FAILED = "video_failed"      # video recording failed (e.g. timeout, no response)
+STATUS_VLM_FAILED = "vlm_failed"        # VLM feedback failed (e.g. timeout, no response)
 STATUS_SUBMITTED = "submitted"      # dispatched to the HPC scheduler, awaiting result
 STATUS_NO_METRICS = "no_metrics"    # job ran but left no usable TensorBoard logs
 # Terminal job states (succeeded / failed / timed_out) are stored verbatim.
@@ -59,14 +61,17 @@ class RewardRecord:
     phase: str                           # "run" (exploration) | "eval" (scoring)
     tag: str                             # unique label, e.g. "iter1_run_0"
     seed: Optional[int] = None           # training seed, if pinned
+    video_length: Optional[int] = None      # length of the recorded videos (play.py output)
 
     # --- generation (LLM) ---------------------------------------------------
     model: Optional[str] = None
     temperature: Optional[float] = None
     gen_seed: Optional[int] = None       # LLM sampler seed for this candidate
     raw_response: Optional[str] = None   # verbatim LLM completion
-    reward_method: Optional[str] = None  # extracted compute_reward source
+    vlm_response: Optional[str] = None   # verbatim VLM feedback (if any)
+    reward_method: Optional[str] = None  # extracted _get_rewards source
     gen_error: Optional[str] = None      # why generation failed, if it did
+    vlm_error: Optional[str] = None      # why VLM feedback failed, if it did
 
     # --- dispatch / evaluation (local runner / hpc scheduler) ---------------
     status: str = STATUS_PENDING
@@ -78,11 +83,13 @@ class RewardRecord:
     tb_path: Optional[str] = None        # TensorBoard event file
     summary_path: Optional[str] = None   # human-readable scalar summary
     checkpoint_path: Optional[str] = None  # saved policy checkpoint (rl_games .pth)
+    video_paths: Optional[list[str]] = None # path to the recorded videos (play.py output)
 
     # --- judgement (fitness scorer) -----------------------------------------
     fitness: float = field(default_factory=lambda: float("-inf"))
     selected_best: bool = False          # chosen as the batch winner
     feedback_text: Optional[str] = None  # exact feedback sent to the LLM
+    vlm_score: Optional[int] = None      # numeric score extracted from VLM feedback (1-3)
 
     # --- bookkeeping --------------------------------------------------------
     created_at: float = field(default_factory=time.time)

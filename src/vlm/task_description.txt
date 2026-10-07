@@ -14,8 +14,13 @@ the agent has not achieved a single success in that clip - even if the in-hand c
 updates as your primary evidence for success, not visual proximity between the two cubes.
 
 **Things to watch for**: 
-Partial loss of contact, the cube lifting, shifting, or slipping unexpectedly against the palm, jitter - 
-even when the cube never comes close to fully falling. 
+1. High-frequency joint vibration/jittering used to generate artificial reward.
+2. Dropping or flicking the object into an uncontrolled trajectory.
+3. Freezing/stagnating in a static grip to collect passive rewards without attempting goal rotation.
+4. Mesh clipping/penetration between fingertips and the object.
+
+If the robot uses an unusual or unexpected finger sequence, but maintains controlled, stable, and smooth physical contact 
+while rotating the object toward the goal, then it may be valid task progress.
 
 
 

@@ -99,16 +99,16 @@ class EurekaAgent:
         best_response_text: str,
         summary_path: str = None,
         failure_msg: str = None,
+        vlm_feedback: str = None,
     ) -> str:
         """
         Fold the previous iteration's outcome into the conversation.
 
         Two feedback paths, as in Eureka. A candidate that *trained* gets the policy
         summary: each reward component's statistics and trend (logged as
-        ``Episode/components_*`` by the task layer), which is what the code-feedback
-        tips ask the LLM to reason over before it rewrites anything. A candidate that
-        *failed* gets the reason it failed, so the next attempt can fix it rather than
-        repeat it.
+        ``Episode/components_*`` by the task layer), optionally augmented with VLM
+        feedback. A candidate that *failed* gets the reason it failed, so the next
+        attempt can fix it rather than repeat it.
 
         Args:
             best_response_text: Raw LLM response that produced the best run — or, when
@@ -121,6 +121,8 @@ class EurekaAgent:
                 its own code next to this reason, and pairing code with another
                 candidate's error would send it after the wrong bug. Falls back to a
                 generic rewrite request when the reason was not captured.
+            vlm_feedback: Optional qualitative feedback provided by a Vision-Language
+                Model (VLM) evaluating video/visual logs of the execution.
 
         Returns:
             The exact feedback message text appended to the conversation (so the
@@ -129,29 +131,38 @@ class EurekaAgent:
         if summary_path and os.path.exists(summary_path):
             with open(summary_path, "r") as f:
                 summary = f.read()
-            feedback_content = (
-                self.prompts["policy_feedback"]
-                + "\n"
-                + summary
-                + "\n"
-                + self.prompts["code_feedback"]
-            )
+
+            parts = [
+                self.prompts["policy_feedback"],
+                summary,
+            ]
+
+            # If VLM feedback exists, include it in the feedback message and adjust the instruction prompt accordingly.
+            if vlm_feedback and vlm_feedback.strip():
+                parts.append(self.prompts["vlm_feedback"].format(vlm_feedback=vlm_feedback))
+                parts.append(self.prompts["vlm_feedback_tips"])
+            else:
+                parts.append(self.prompts["code_feedback"])
+
+            feedback_content = "\n\n".join(parts)
         else:
             feedback_content = self.prompts["execution_error_feedback"].format(
                 traceback_msg=failure_msg or GENERIC_FAILURE_MSG
             )
-        feedback_content += self.code_output_tip
+
+        feedback_content += "\n\n" + self.code_output_tip
 
         assistant_msg = {"role": "assistant", "content": best_response_text}
         user_msg = {"role": "user", "content": feedback_content}
+
         if len(self.messages) == 2:
             self.messages += [assistant_msg, user_msg]
         else:
             # Keep the window to system + initial-user + last assistant/user pair.
             self.messages[-2] = assistant_msg
             self.messages[-1] = user_msg
-        return feedback_content
 
+        return feedback_content
     def func_gen(self, messages, seed=None):
         """
         Query the LLM and return (method_source, raw_response).

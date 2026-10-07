@@ -44,30 +44,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# For initial call 
-# 1. Parse cli arguments (--as_images, --video_path)
-# 2. Load config from refineconfig.yamlm pass "vlm" section to VLMFeedbackAgent
-# 3. Retrieve task description from hard coded txt file
-
-
-# For video processing
-# 1. Retrieve video path from cli args
-# if --as_images is raised
-# 1a. Slice video into frames
-# else
-# 2. Construct VLMFeedbackAgent with task description and config
-# 3. Pass video/frames to VLMFeedbackAgent
-
-# For slicing video into frames
-# 1. If there are already images from a previous run, clear them out
-# 2. Use OpenCV to read video and slice into frames
-# 3. Save frames to dedicated folder (need to save so we can look at them later)
-
-# After getting feedback (hardcoded path for now)
-# 1. define jsonl file structure
-# 1a. if save_raw_response is true, save raw response to jsonl file
-# 2. write feedback to jsonl file
-
 def slice_video_into_frames(video_path: str, output_dir: str, fps: int)-> list[str]:
     """
     Slice a video into frames and save them as images.

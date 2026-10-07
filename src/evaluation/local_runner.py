@@ -128,6 +128,7 @@ class LocalRunner:
         command: Optional[str] = None,
         build_args: Optional[Dict[str, str]] = None,
         timeout_seconds: int = 3600,
+        wipe_work_dir: bool = True,
     ) -> RunResult:
         """
         Build the candidate's image and run it, blocking until it finishes.
@@ -141,7 +142,7 @@ class LocalRunner:
         image = f"{self.image_repo}:{tag}"
         name = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"ard_{tag}")
         work_dir = os.path.abspath(work_dir)
-        if os.path.exists(work_dir):
+        if wipe_work_dir and os.path.exists(work_dir):
             shutil.rmtree(work_dir, ignore_errors=True)
         os.makedirs(work_dir, exist_ok=True)
         log_path = os.path.join(work_dir, "local_run.log")

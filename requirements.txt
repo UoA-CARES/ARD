@@ -6,3 +6,4 @@ PyYAML>=6.0           # config files
 tensorboard>=2.11     # reading training TensorBoard summaries from artifacts
 numpy>=1.23           # scalar summary statistics
 tqdm>=4.64            # progress bars
+opencv-python<5.0.0   # Slicing video frames for VLM feedback (cv2.VideoCapture)

@@ -6,10 +6,12 @@ which is then used as reward reflection for the next iteration of the Eureka pip
 """
 
 
+import json
 import os
 import logging
 import base64
 
+from typing import Optional
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -21,12 +23,15 @@ class VLMFeedbackAgent:
     Args:
         task_description: Natural-language description of the task goal.
         agent_config: {model, base_url, sample, temperature...}.
+        system_prompt_path: Path to the system prompt file.
+        [Optional] system_prompt_path: Path to the system prompt file. If not provided, a default prompt will be used.
     """
 
     def __init__(
         self,
         task_description: str,
         agent_config: dict,
+        system_prompt_path: Optional[str] = None,
     ):
         self.model = agent_config.get("model")
         self.base_url = agent_config.get("base_url")
@@ -43,28 +48,25 @@ class VLMFeedbackAgent:
 
         self.raw_response = None  # Store the raw response for debugging
 
-        self.sys_message = self._init_sys_message()
+        self.sys_message = self._init_sys_message(system_prompt_path)
 
-    def _init_sys_message(self):
-        """
-        Initialise system message for the VLM model based on the task description.
-        """
-        system_prompt_path = os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
-        with open(system_prompt_path, "r") as f:
-            system_prompt = f.read()
 
-        return [{"role": "system", "content": system_prompt}]
+    def _init_sys_message(self, system_prompt_path: Optional[str] = None) -> list[dict]:
+        """Initialise system message for the VLM model."""
+        path = system_prompt_path or os.path.join(os.path.dirname(__file__), "vlm_critic.txt")
+        with open(path, "r") as f:
+            return [{"role": "system", "content": f.read()}]
 
-    def critique_video(self, video_path: str, seed: int = None) -> str:
+    def critique_video(self, video_path: str, seed: int = None, response_format: Optional[dict] = None) -> dict:
         """
         Critiques a video and returns a natural language feedback.
         """
         video_content = self._build_video_content(video_path)
         messages = self._build_messages([video_content])
         logger.info("Video Critique requested. ")
-        return self._call_vlm(messages, seed=seed)
+        return self._call_and_parse(messages, seed=seed, response_format=response_format)
 
-    def critique_images(self, frame_paths: list[str], seed: int = None) -> str:
+    def critique_images(self, frame_paths: list[str], seed: int = None, response_format: Optional[dict] = None) -> dict:
         """
         Critiques a sequence of images and returns a natural language feedback.
         """
@@ -73,7 +75,48 @@ class VLMFeedbackAgent:
         image_content = self._build_image_content(frame_paths)
         messages = self._build_messages([sequence_note] + image_content)
         logger.info("Image Critique requested. ")
-        return self._call_vlm(messages, seed=seed)
+        return self._call_and_parse(messages, seed=seed, response_format=response_format)
+
+    def score(self, video_path: str, seed: int = None, is_video: bool = True) -> float:
+        """
+        Scores a video and returns a numerical score.
+        """
+        if is_video:
+            video_content = self._build_video_content(video_path)
+            messages = self._build_messages([video_content], sys_message=self.score_sys_message)
+        else:
+            sequence_note = {"type": "text", "text": "The following frames are labelled with its timestamp in seconds (e.g 0.14s). "
+                "Use these to judge the speed and timing of movements between frames."}
+            image_content = self._build_image_content(video_path)
+            messages = self._build_messages([sequence_note] + image_content, sys_message=self.score_sys_message)
+        logger.info("Video Scoring requested. ")
+        feedback = self._call_vlm(messages, seed=seed)
+        try:
+            score = float(feedback.strip())
+            return score
+        except ValueError:
+            logger.error(f"Failed to parse score from feedback: {feedback}")
+            raise
+
+    def _parse_response(self, response: str) -> dict:
+        """
+        Parse the VLM response, ensuring it is valid JSON and contains the expected fields.
+        """
+        if isinstance(response, dict):
+            data = response
+        else:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.strip("`")            # drop fences
+                text = text.removeprefix("json").strip()
+            data = json.loads(text)               # JSONDecodeError is a ValueError subclass
+
+        if data.get("score") not in (1, 2, 3):
+            raise ValueError(f"Invalid score: {data.get('score')!r}")
+        if not isinstance(data.get("reasoning"), str) or not data["reasoning"].strip():
+            raise ValueError("Missing reasoning")
+        return data
+
 
     def _build_video_content(self, video_path: str) -> dict:
         """
@@ -111,17 +154,31 @@ class VLMFeedbackAgent:
             })
         return content_list
 
-    def _build_messages(self, content_items: list[dict]) -> list[dict]:
+    def _build_messages(self, content_items: list[dict], sys_message: Optional[list[dict]] = None) -> list[dict]:
         """
-        Builds a list of messages for the VLM model based on the provided content items.
+        Builds a list of messages for the VLM model based on the task description + provided content items.
+
         """
-        content = [{"type": "text", 
-                    "text": self.task_description}] + content_items
+        content = [{"type": "text", "text": self.task_description}] + content_items
+        return (sys_message or self.sys_message) + [{"role": "user", "content": content}]
 
-        return self.sys_message + [{"role": "user", "content": content}]
+    def _call_and_parse(self, messages, seed, response_format, attempts=3) -> dict:
+        """
+        Calls the VLM model and attempts to parse the response as JSON.
+        Retries up to `attempts` times if parsing fails.
+        """
+        for i in range(attempts):
+            raw = self._call_vlm(messages, seed=None if seed is None else seed + i,
+                                response_format=response_format)
+            try:
+                if not isinstance(raw, (str, dict)):
+                    raise ValueError(f"unexpected VLM response type: {type(raw).__name__}")
+                return self._parse_response(raw)
+            except ValueError as e:
+                logger.warning(f"VLM parse failed (attempt {i+1}/{attempts}): {e}")
+        raise RuntimeError(f"VLM returned no valid JSON after {attempts} attempts")
 
-
-    def _call_vlm(self, messages: list[dict], seed: int = None) -> str:
+    def _call_vlm(self, messages: list[dict], seed: int = None, response_format: Optional[dict] = None) -> str:
         """
         VLM API call
         """
@@ -129,6 +186,9 @@ class VLMFeedbackAgent:
 
         for attempt in range(max_retries):
             try:
+                kwargs = {}
+                if response_format:
+                    kwargs["response_format"] = response_format
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -136,13 +196,13 @@ class VLMFeedbackAgent:
                     max_tokens=self.max_output_tokens,
                     timeout=self.timeout_seconds,
                     seed=seed,
-                    frequency_penalty=self.frequency_penalty
+                    frequency_penalty=self.frequency_penalty,
+                    **kwargs,
                 )
                 feedback = response.choices[0].message.content
                 if feedback is not None:
                     logger.info(f"VLM feedback received")
                     logger.info(f"Finish Reasoning: {response.choices[0].finish_reason}")
-                        
                     return feedback
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed: {e}")
