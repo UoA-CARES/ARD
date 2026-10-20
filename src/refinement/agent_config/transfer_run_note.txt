@@ -1,0 +1,1 @@
+Note: this training run did not start from random weights. It was initialized from the best policy of the previous iteration, so the early statistics, `fitness_function` included, reflect behaviour the policy inherited rather than behaviour it learned in this run. Judge progress relative to where the run started, not relative to zero.

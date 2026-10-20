@@ -49,6 +49,12 @@ class EurekaAgent:
         reward_template: Pristine ``compute_reward`` source (the contract to fill in).
         env_source: Full task env-class source (LLM task context).
         agent_config: {model, base_url, sample, temperature?}.
+        transfer_learning: True when iterations warm-start from the previous
+            winner's checkpoint. The system prompt then tells the LLM that the
+            policy carries over between iterations, and ``receive_feedback`` can
+            add the matching per-iteration notes. Leave it False whenever the
+            same conversation feeds cold-started runs too (the transfer ablation),
+            or the prompt would describe training that does not happen.
     """
 
     def __init__(
@@ -57,11 +63,13 @@ class EurekaAgent:
         reward_template: str,
         env_source: str,
         agent_config: dict,
+        transfer_learning: bool = False,
     ):
         self.prompts = load_prompts()
         self.task_description = task_description
         self.reward_template = reward_template
         self.env_source = env_source
+        self.transfer_learning = transfer_learning
 
         self.model = agent_config.get("model")
         self.base_url = agent_config.get("base_url")
@@ -79,12 +87,12 @@ class EurekaAgent:
         self.messages = self._init_messages()
 
     def _init_messages(self):
-        system_content = (
-            self.prompts["initial_system"].format(
-                task_reward_template=self.reward_template
-            )
-            + self.code_output_tip
+        system_content = self.prompts["initial_system"].format(
+            task_reward_template=self.reward_template
         )
+        if self.transfer_learning:
+            system_content += self.prompts["transfer_system"]
+        system_content += self.code_output_tip
         user_content = self.prompts["initial_user"].format(
             task_obs_code_string=self.env_source,
             task_description=self.task_description,
@@ -99,6 +107,8 @@ class EurekaAgent:
         best_response_text: str,
         summary_path: str = None,
         failure_msg: str = None,
+        run_was_transferred: bool = False,
+        next_transfers: bool = False,
     ) -> str:
         """
         Fold the previous iteration's outcome into the conversation.
@@ -121,6 +131,11 @@ class EurekaAgent:
                 its own code next to this reason, and pairing code with another
                 candidate's error would send it after the wrong bug. Falls back to a
                 generic rewrite request when the reason was not captured.
+            run_was_transferred: The run in ``summary_path`` was itself initialized
+                from an earlier policy, so its early statistics are inherited.
+            next_transfers: The next iteration's runs will be initialized from a
+                checkpoint. Only takes effect when the agent was built with
+                ``transfer_learning=True``.
 
         Returns:
             The exact feedback message text appended to the conversation (so the
@@ -129,16 +144,31 @@ class EurekaAgent:
         if summary_path and os.path.exists(summary_path):
             with open(summary_path, "r") as f:
                 summary = f.read()
+            run_note = ""
+            if self.transfer_learning and run_was_transferred:
+                run_note = self.prompts["transfer_run_note"]
             feedback_content = (
                 self.prompts["policy_feedback"]
                 + "\n"
                 + summary
                 + "\n"
+                + run_note
                 + self.prompts["code_feedback"]
             )
+            transfer_source = "the policy trained with the `compute_reward` shown above"
         else:
             feedback_content = self.prompts["execution_error_feedback"].format(
                 traceback_msg=failure_msg or GENERIC_FAILURE_MSG
+            )
+            # The failed code never produced a policy, so the transfer comes from
+            # an earlier iteration's winner.
+            transfer_source = (
+                "the best policy from an earlier iteration (trained with an earlier "
+                "`compute_reward`, not the failed one above)"
+            )
+        if self.transfer_learning and next_transfers:
+            feedback_content += self.prompts["transfer_feedback"].format(
+                source=transfer_source
             )
         feedback_content += self.code_output_tip
 

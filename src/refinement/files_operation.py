@@ -19,6 +19,9 @@ def load_prompts():
         "code_feedback": "code_feedback.txt",
         "execution_error_feedback": "execution_error_feedback.txt",
         "policy_feedback": "policy_feedback.txt",
+        "transfer_system": "transfer_system.txt",
+        "transfer_feedback": "transfer_feedback.txt",
+        "transfer_run_note": "transfer_run_note.txt",
     }
     prompts = {}
     for key, fname in names.items():

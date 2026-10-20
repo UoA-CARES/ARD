@@ -1,0 +1,6 @@
+
+Transfer learning: the policy trained with your next `compute_reward` will be initialized from the weights of {source}. It already has whatever behaviour that policy learned. Keep this in mind when you rewrite the reward:
+    (1) Prefer revising the reward over replacing it. Components that are clearly working are worth keeping, because the transferred policy already responds to them. A reward that pulls in a very different direction can make the policy unlearn useful skills before it learns new ones.
+    (2) A substantial rewrite is still the right call if `fitness_function` stopped improving or the policy settled on behaviour that does not solve the task. Do not keep a reward only because the policy is already trained on it.
+    (3) Shift the reward's focus toward what the policy still gets wrong. Shaping terms that only served to get early learning started may matter less now.
+    (4) The optimizer state and the value normalizer are reset at the transfer, so changing the overall reward scale is safe. Changing the relative weights of components still changes what the policy optimizes.

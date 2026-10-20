@@ -143,6 +143,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         reward_template=evaluator.get_reward_template(),
         env_source=evaluator.get_env_source(),
         agent_config=refine_cfg.get("agent", {}),
+        transfer_learning=bool(normalize_warm_start_cfg(refine_cfg).get("enabled", False)),
     )
 
     iterations = int(refine_cfg.get("iteration", 1))
@@ -221,7 +222,10 @@ def run_refinement(settings, task_cfg, refine_cfg):
 
         # --- Run phase: dispatch + capture (evaluator), then judge (scorer) --
         logger.info(f"Evaluating {sum(r.has_method for r in run_records)} candidate(s)")
-        if warm_start and warm_start_source:
+        # Whether this iteration's runs start from a checkpoint; the feedback
+        # tells the LLM so, since their early statistics are inherited.
+        run_was_transferred = bool(warm_start and warm_start_source)
+        if run_was_transferred:
             logger.info(
                 f"Warm-starting from {warm_start_source.tag} "
                 f"(fitness={warm_start_source.fitness:.4f}): "
@@ -263,6 +267,9 @@ def run_refinement(settings, task_cfg, refine_cfg):
                 seed_record.raw_response if seed_record else "",
                 summary_path=None,
                 failure_msg=failure_msg,
+                # warm_start_source is unchanged by a failed iteration, so the next
+                # one transfers from the same earlier winner (if there is one).
+                next_transfers=bool(warm_start and warm_start_source),
             )
             if seed_record:
                 history.update(seed_record, feedback_text=feedback)
@@ -306,7 +313,9 @@ def run_refinement(settings, task_cfg, refine_cfg):
         # candidate with its summary, feeding the whole batch back later is just
         # a different read of `run_records` — no structural change needed.
         feedback = agent.receive_feedback(
-            best.raw_response, summary_path=best.summary_path
+            best.raw_response, summary_path=best.summary_path,
+            run_was_transferred=run_was_transferred,
+            next_transfers=bool(warm_start and warm_start_source),
         )
         history.update(best, feedback_text=feedback)
         history.save_json()
