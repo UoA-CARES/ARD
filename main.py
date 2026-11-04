@@ -92,6 +92,18 @@ def resolve_task_config(task_name, tasks_repo):
         f"Available: {available}"
     )
 
+def build_additional_task_context(evaluator, task_cfg) -> str:
+    """
+    Builds the additional cfg task context for the LLM. This is the environment configuration and any other task-specific configuration files that are needed for the LLM to understand the task.
+    """
+    sections = [
+        f"File `{os.path.basename(path)}`:\n{evaluator.get_additional_cfg_sources(path)}"
+        for path in task_cfg.get("additional_cfg_files", [])
+    ]
+    if not sections:
+        return ""
+    return "Below are the additional task configuration files:\n\n" + "\n\n".join(sections)
+
 def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg) -> Optional[dict]:
     """
     Get feedback from the VLM module for a reward candidate.
@@ -125,6 +137,10 @@ def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg) -> Optional[dict]:
     try:
         # Record the videos for the best candidate
         video_paths = evaluator.record_videos(record)
+        if not video_paths:
+            logger.error(f"[{record.tag}] video recording failed: {record.eval_error or 'unknown error'}")
+            return None
+
         record.video_paths = video_paths  # Store the recorded video paths in the best record
         # Search for the video path ending with the target suffix
         video_path = next(
@@ -185,6 +201,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
         reward_template=evaluator.get_reward_template(),
         env_source=evaluator.get_env_source(),
         agent_config=refine_cfg.get("agent", {}),
+        additional_cfg=build_additional_task_context(evaluator, task_cfg),
     )
 
     iterations = int(refine_cfg.get("iteration", 1))

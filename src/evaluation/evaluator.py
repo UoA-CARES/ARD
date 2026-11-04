@@ -190,6 +190,10 @@ class RewardEvaluator:
         """Full pristine task env source, for LLM task context."""
         return self.workspace.get_env_source()
 
+    def get_additional_cfg_sources(self, rel_path: str) -> str:
+        """Return additional cfg sources for LLM context (e.g ...env_cfg.py, ...config.py)."""
+        return self.workspace.get_additional_cfg_sources(rel_path)
+
     # ---------------------------------------------------------------- evaluate
     @staticmethod
     def _checkpoint_epoch(checkpoint_path: str) -> Optional[int]:

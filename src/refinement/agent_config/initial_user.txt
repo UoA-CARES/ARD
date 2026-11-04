@@ -1,5 +1,7 @@
-Below is the environment class for this task. Read it to see the `self.*` state, the observations, and the `compute_reward` template you are improving:
+Below is the environment class for this task. Read it to see the `self.*` state and the observations. Its `compute_reward` is an empty template for you to fill in:
 
 {task_obs_code_string}
 
-Write an improved `compute_reward` method for the following task: {task_description}.
+{additional_cfg_string}
+
+Write a `compute_reward` method for the following task: {task_description}.

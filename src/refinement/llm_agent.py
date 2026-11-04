@@ -49,6 +49,7 @@ class EurekaAgent:
         reward_template: Pristine ``compute_reward`` source (the contract to fill in).
         env_source: Full task env-class source (LLM task context).
         agent_config: {model, base_url, sample, temperature?}.
+        additional_cfg: Optional additional task config sources (LLM context).
     """
 
     def __init__(
@@ -57,6 +58,7 @@ class EurekaAgent:
         reward_template: str,
         env_source: str,
         agent_config: dict,
+        additional_cfg: str = "",
     ):
         self.prompts = load_prompts()
         self.task_description = task_description
@@ -76,6 +78,7 @@ class EurekaAgent:
 
         self.code_output_tip = self.prompts["code_output_tip"]
 
+        self.additional_cfg = additional_cfg
         self.messages = self._init_messages()
 
     def _init_messages(self):
@@ -87,6 +90,7 @@ class EurekaAgent:
         )
         user_content = self.prompts["initial_user"].format(
             task_obs_code_string=self.env_source,
+            additional_cfg_string=self.additional_cfg,
             task_description=self.task_description,
         )
         return [

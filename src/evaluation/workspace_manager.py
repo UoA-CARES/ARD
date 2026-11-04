@@ -79,6 +79,11 @@ class WorkspaceManager:
         with open(os.path.join(self.tasks_repo, self.env_file_rel)) as fh:
             return fh.read()
 
+    def get_additional_cfg_sources(self, rel_path: str) -> str:
+        """Return additional cfg sources for LLM context (e.g ...env_cfg.py, ...config.py)."""
+        with open(os.path.join(self.tasks_repo, rel_path)) as fh:
+            return fh.read()
+        
     # ------------------------------------------------------------------- build
     def build_codebase(
         self, reward_method_src: str, tag: str, checkpoint_path: Optional[str] = None
