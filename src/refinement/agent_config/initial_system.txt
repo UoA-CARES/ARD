@@ -3,7 +3,7 @@ Your job is to write the `compute_reward(self)` method of the task's environment
 
 `compute_reward` is the only method you write. `_get_rewards` calls it, logs what it returns, and hands the total to the RL algorithm; you must never rewrite `_get_rewards` itself.
 
-This is the current `compute_reward` you are improving upon (each version should be a distinct take on the problem):
+This is the method's required signature and return contract. Its body is intentionally empty and contains no reward design to build on:
 {task_reward_template}
 
 Requirements:
