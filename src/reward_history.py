@@ -105,6 +105,14 @@ class RewardRecord:
             d["fitness"] = None
         return d
 
+    @classmethod
+    def from_dict(cls, d: Dict) -> "RewardRecord":
+        """Rebuild a record from :meth:`to_dict` output (null fitness -> -inf)."""
+        d = dict(d)
+        if d.get("fitness") is None:
+            d["fitness"] = float("-inf")
+        return cls(**d)
+
     def __repr__(self):
         fit = f"{self.fitness:.4f}" if isfinite(self.fitness) else "n/a"
         return (f"RewardRecord(tag={self.tag}, status={self.status}, "
@@ -174,7 +182,22 @@ class RewardHistory:
         with self._lock:
             payload = [r.to_dict() for r in self._records]
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w") as fh:
+        # Write to a temp file, then rename: a crash mid-write must not leave a
+        # half-written history, because this file is what --resume reads.
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w") as fh:
             json.dump(payload, fh, indent=2)
+        os.replace(tmp_path, path)
         logger.info(f"Reward history written to {path} ({len(payload)} records)")
         return path
+
+    def load_json(self, path: Optional[str] = None) -> int:
+        """Replace the in-memory records with those saved at ``path``. Returns count."""
+        if path is None:
+            path = os.path.join(self.output_dir, "reward_history.json")
+        with open(path) as fh:
+            payload = json.load(fh)
+        records = [RewardRecord.from_dict(d) for d in payload]
+        with self._lock:
+            self._records = records
+        return len(records)

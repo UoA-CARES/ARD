@@ -136,7 +136,13 @@ python main.py --refine --settings configs/settings.yaml \
                --refineconfig configs/refineconfig.yaml
 # enable warm-starting (off by default), overriding refineconfig.yaml's warm_start:
 python main.py --refine --task cartpole --warm-start
+# continue an interrupted run (crash, network loss, killed HPC job):
+python main.py --refine --task cartpole --resume runs/cartpole/20260831-142300
 ```
+
+### Resuming a run
+
+`--resume <run_dir>` continues a run from its saved state. Finished candidates are not retrained, candidates already generated are not sent to the LLM again, and the LLM conversation and warm-start checkpoint are restored. Settings that change the run (`task`, `base_seed`, `sample`, `warm_start`) must match the original, or the resume is refused. On the HPC backend, jobs that were already submitted are re-attached by job ID. Their spec is not saved, so if one of them returns no results, it is marked failed instead of being resubmitted.
 
 To refine a different task, either point `taskconfig.yaml` at it (`task` + `env_file`) or pass `--task` with the directory name or the registered task ID:
 
