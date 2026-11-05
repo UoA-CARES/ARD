@@ -35,6 +35,7 @@ from src.evaluation import RewardEvaluator, FitnessScorer
 from src.reward_history import RewardHistory, STATUS_GENERATED, STATUS_GEN_FAILED, STATUS_VIDEO_FAILED, STATUS_VLM_FAILED
 from src.vlm import VLM
 
+from src.run_state import save_state, load_state
 
 logging.basicConfig(
     level=logging.INFO,
@@ -156,15 +157,17 @@ def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg) -> Optional[dict]:
     vlm.save_vlm_feedback(feedback["reasoning"], os.path.dirname(record.summary_path))  # Save feedback to the same directory as training_summary.txt
     return feedback
 
+def run_refinement(settings, task_cfg, refine_cfg, resume_dir=None):
+    """Run the Eureka refinement loop for one task.
 
-
-def run_refinement(settings, task_cfg, refine_cfg):
-    """Run the Eureka refinement loop for one task."""
+    If ``resume_dir`` is given, continue the run stored there: finished
+    candidates are not retrained and completed iterations are not repeated.
+    """
     tasks_repo = settings["tasks_repo"]
     # Timestamped per-execution directory: re-running a task must not delete the
     # previous execution's logs/checkpoints (each job rmtree's its own work_dir)
     # nor overwrite its reward_history.json.
-    output_dir = os.path.join(
+    output_dir = resume_dir or os.path.join(
         os.path.expanduser(settings.get("output_dir", "./runs")),
         task_cfg["task"],
         datetime.now().strftime("%Y%m%d-%H%M%S"),
@@ -202,7 +205,49 @@ def run_refinement(settings, task_cfg, refine_cfg):
     # the generation fan-out below can register records concurrently.
     history = RewardHistory(output_dir=output_dir)
 
-    for i in range(1, iterations + 1):
+    # Settings that must match between the original run and a resumed one.
+    run_identity = {
+        "task": task_cfg["task"],
+        "base_seed": base_seed,
+        "sample": agent.samples,
+        "warm_start": warm_start,
+    }
+    completed_iterations = 0
+    if resume_dir:
+        state = load_state(resume_dir)
+        for key, value in run_identity.items():
+            if state.get(key) != value:
+                raise ValueError(
+                    f"Cannot resume {resume_dir}: '{key}' is {value!r} now but was "
+                    f"{state.get(key)!r} in the original run"
+                )
+        history.load_json()
+        completed_iterations = int(state["completed_iterations"])
+        agent.messages = state["messages"]
+        warm_start_checkpoint = state.get("warm_start_checkpoint")
+        if warm_start_checkpoint and not os.path.exists(warm_start_checkpoint):
+            logger.warning(f"Warm-start checkpoint missing, cold-starting: {warm_start_checkpoint}")
+            warm_start_checkpoint = None
+        logger.info(
+            f"Resuming {resume_dir}: {completed_iterations} iteration(s) done, "
+            f"{len(history.all())} record(s) loaded"
+        )
+
+    def _save_progress(completed):
+        """Persist history and run state. Called after each step so a crash loses little."""
+        history.save_json()
+        save_state(output_dir, {
+            **run_identity,
+            "completed_iterations": completed,
+            "warm_start_checkpoint": warm_start_checkpoint,
+            "messages": agent.messages,
+        })
+
+    evaluator.on_record_done = lambda record: history.save_json()
+    if not resume_dir:
+        _save_progress(0)
+
+    for i in range(completed_iterations + 1, iterations + 1):
         logger.info(f"=== Refinement iteration {i}/{iterations} ===")
 
         # --- Generation phase: propose a batch of candidates -----------------
@@ -216,6 +261,10 @@ def run_refinement(settings, task_cfg, refine_cfg):
             # designs instead of collapsing to one (identical prompts alone can
             # return identical completions under provider-side determinism).
             gen_seed = base_seed + i * 1000 + k
+            # Resume: this candidate was already generated before the crash. Keep
+            # its code instead of paying for a new LLM call.
+            if any(r.index == k for r in history.for_iteration(i, phase="run")):
+                return
             try:
                 method, raw = agent.func_gen(agent.messages, seed=gen_seed)
                 history.new_record(
@@ -240,6 +289,9 @@ def run_refinement(settings, task_cfg, refine_cfg):
                 desc=f"iter {i}: generating rewards",
             ))
 
+        # Save the generated code now, before any training starts. Otherwise a
+        # crash before the first candidate finishes would lose it and cost new LLM calls.
+        history.save_json()
         run_records = history.for_iteration(i, phase="run")
 
         # --- Run phase: dispatch + capture (evaluator), then judge (scorer) --
@@ -291,7 +343,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
             )
             if seed_record:
                 history.update(seed_record, feedback_text=feedback)
-            history.save_json()
+            _save_progress(i)
             continue
 
         logger.info(f"Best candidate idx={best.index} fitness={best.fitness:.4f}")
@@ -316,7 +368,7 @@ def run_refinement(settings, task_cfg, refine_cfg):
             )
         logger.info(f"Successfully merged feedback for candidate idx={best.index}")
         history.update(best, feedback_text=feedback)
-        history.save_json()
+        _save_progress(i)
 
     logger.info("Refinement loop complete")
 
@@ -341,8 +393,11 @@ def run_refinement(settings, task_cfg, refine_cfg):
         f"=== Eval phase: re-training {best.tag} (fitness {best.fitness:.4f}) "
         f"on {num_eval} seed(s) ==="
     )
+    # On resume, reuse eval records from the previous run (matched by tag) so the
+    # evaluator skips the ones that already finished.
+    existing_eval = {r.tag: r for r in history.for_iteration(best.iteration, phase="eval")}
     eval_records = [
-        history.new_record(
+        existing_eval.get(f"{best.tag}_eval_{k}") or history.new_record(
             iteration=best.iteration, index=k, phase="eval",
             tag=f"{best.tag}_eval_{k}",
             seed=base_seed + k + 1, model=best.model, temperature=best.temperature,
@@ -382,6 +437,10 @@ def main():
                              "false, or refineconfig.yaml's warm_start).")
     parser.add_argument("--vlm", action="store_true", 
                         help="Use VLM for refinement")
+    parser.add_argument("--resume", type=str, default=None, metavar="RUN_DIR",
+                        help="Continue an interrupted refinement run stored in RUN_DIR "
+                             "(e.g. runs/<task>/<timestamp>). Finished candidates are "
+                             "not retrained.")
     args = parser.parse_args()
 
     settings = load_yaml_config(args.settings)
@@ -397,7 +456,7 @@ def main():
             refine_cfg["warm_start"] = True
         if args.vlm:
             refine_cfg["vlm_feedback"] = True
-        run_refinement(settings, task_cfg, refine_cfg)
+        run_refinement(settings, task_cfg, refine_cfg, resume_dir=args.resume)
     else:
         parser.print_help()
 

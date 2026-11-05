@@ -432,44 +432,148 @@ class RewardEvaluator:
         # No queue, no artifacts tarball: the job writes its logs into
         # <output_dir>/<tag>/ and we read them there.
         for record in records:
-            if not record.has_method:
-                record.status = STATUS_GEN_FAILED
+            if self._is_done(record):
+                logger.info(f"[{record.tag}] already finished; skipping (resume)")
                 continue
-            tag = record.tag
             try:
-                tarball = self.workspace.build_codebase(
-                    record.reward_method, tag, checkpoint_path
-                )
-            except RewardInjectionError as e:
-                logger.error(f"[{tag}] reward injection failed: {e}")
-                record.status = STATUS_BUILD_FAILED
-                record.eval_error = f"injection: {e}"
-                continue
-
-            result = self.runner.run(
-                tarball_path=tarball,
-                work_dir=os.path.join(self.output_dir, tag),
-                env=self._build_env(record.seed, checkpoint_path),
-                command=self._build_command(record.seed),
-                build_args=self.build_args,
-                timeout_seconds=self.timeout_seconds,
-            )
-            record.status = result.status
-            if result.status != "succeeded":
-                record.eval_error = result.error or result.status
-                continue
-
-            captured = self.processor.capture(result.work_dir)
-            if captured is None:
-                record.status = STATUS_NO_METRICS
-                record.eval_error = "no usable TensorBoard logs"
-                continue
-            record.log_path = captured.log_path
-            record.tb_path = captured.tb_path
-            record.summary_path = captured.summary_path
-            record.checkpoint_path = captured.checkpoint_path
+                self._run_local_record(record, checkpoint_path)
+            finally:
+                # Persist after every candidate, so a crash loses at most the one in flight.
+                self._notify(record)
 
         return records
+
+    def _run_local_record(self, record: RewardRecord, checkpoint_path: Optional[str]):
+        """Build, run and capture one candidate locally. Mutates ``record``."""
+        if not record.has_method:
+            record.status = STATUS_GEN_FAILED
+            return
+        tag = record.tag
+        try:
+            tarball = self.workspace.build_codebase(
+                record.reward_method, tag, checkpoint_path
+            )
+        except RewardInjectionError as e:
+            logger.error(f"[{tag}] reward injection failed: {e}")
+            record.status = STATUS_BUILD_FAILED
+            record.eval_error = f"injection: {e}"
+            return
+
+        result = self.runner.run(
+            tarball_path=tarball,
+            work_dir=os.path.join(self.output_dir, tag),
+            env=self._build_env(record.seed, checkpoint_path),
+            command=self._build_command(record.seed),
+            build_args=self.build_args,
+            timeout_seconds=self.timeout_seconds,
+        )
+        record.status = result.status
+        if result.status != "succeeded":
+            record.eval_error = result.error or result.status
+            return
+
+        captured = self.processor.capture(result.work_dir)
+        if captured is None:
+            record.status = STATUS_NO_METRICS
+            record.eval_error = "no usable TensorBoard logs"
+            return
+        record.log_path = captured.log_path
+        record.tb_path = captured.tb_path
+        record.summary_path = captured.summary_path
+        record.checkpoint_path = captured.checkpoint_path
+
+    # ------------------------------------------------------------ resume helpers
+    # Set by the caller (main.py) to a callable(record) that saves progress.
+    on_record_done = None
+
+    def _notify(self, record: RewardRecord) -> None:
+        if self.on_record_done is not None:
+            self.on_record_done(record)
+
+    @staticmethod
+    def _is_done(record: RewardRecord) -> bool:
+        """True if a previous run already finished this candidate and its results exist."""
+        return (
+            record.status == "succeeded"
+            and record.tb_path is not None
+            and os.path.exists(record.tb_path)
+        )
+
+    def _record_videos_local(
+        self,
+        record: RewardRecord,
+    ) -> Optional[list[str]]:
+        """Record videos for a candidate record using play.py on the local backend.
+        
+        This method runs the play.py script in a local docker container, and saves the videos to the output directory.
+        """
+
+        # Check if the record has a valid checkpoint path to use for video recording
+        if not record.checkpoint_path:
+            logger.error(f"[{record.tag}] No checkpoint path provided for video recording")
+            record.status = STATUS_VIDEO_FAILED
+            record.eval_error = "no checkpoint path provided for video recording"
+            return []
+
+        # Check if the record has a valid reward method to use for video recording
+        if not record.has_method:
+            logger.error(f"[{record.tag}] No reward method provided for video recording")
+            record.status = STATUS_VIDEO_FAILED
+            record.eval_error = "no reward method provided for video recording"
+            return []
+
+        # Point output to the same directory as the checkpoint, so the videos are collected in the same place
+        tag = record.tag
+        work_dir = os.path.join(self.output_dir, tag)
+
+        # Reset execution tracking fields only (do NOT wipe record metrics)
+        record.job_id = None
+        record.eval_error = None
+        record.status = STATUS_PENDING
+
+        # --- Phase A: Submit candidate for recording
+        try:
+            tarball = self.workspace.build_codebase(
+                record.reward_method, tag, record.checkpoint_path
+            )
+        except RewardInjectionError as e:
+            logger.error(f"[{tag}] reward injection failed: {e}")
+            record.status = STATUS_VIDEO_FAILED
+            record.eval_error = f"injection: {e}"
+            return []
+
+        result = self.local_runner.run(
+            tarball_path=tarball,
+            work_dir=work_dir,
+            env={"OUTPUT_DIR": "/work"},
+            command=self._build_play_hpc_command(seed=record.seed, video_length=record.video_length),
+            build_args=self.build_args,
+            timeout_seconds=self.timeout_seconds,
+            wipe_work_dir=False,                    
+        )
+
+        # Check the result of the video recording run
+        record.status = result.status
+        if result.status != "succeeded":
+            record.status = STATUS_VIDEO_FAILED
+            record.eval_error = result.error or result.status
+            return []
+                
+                
+        # Check for video artifacts
+        run_dir = os.path.join(work_dir, "logs", "rl_games","play")
+        videos = self.processor.find_videos(run_dir)
+        if not videos:
+            logger.error(f"[{record.tag}] No videos found in {run_dir}")
+            record.status = STATUS_VIDEO_FAILED
+            record.eval_error = "no videos found"
+            return []
+
+        logger.info(f"[{tag}] Successfully generated videos in: {videos}")
+
+        # Return the list of string paths to the video directories
+        return videos
+        
 
     def _record_videos_local(
         self,
@@ -560,12 +664,15 @@ class RewardEvaluator:
              terminal status, copy its NAS artifacts into <output_dir>/<tag>/ and
              capture them in place (same ResultProcessor as local).
         """
-        pending = [r for r in records if r.has_method]
+        # Resumed records: finished ones are skipped; ones already submitted by a
+        # previous run are re-attached by job_id (they are still on the scheduler).
+        pending = [r for r in records if r.has_method and not self._is_done(r)]
+        to_submit = [r for r in pending if not (r.status == STATUS_SUBMITTED and r.job_id)]
 
         # Respect the scheduler's active-job cap up front (mirrors hpc_submit.py):
         # a mid-batch rejection would strand already-submitted jobs.
         active = self.runner.active_job_count()
-        if active + len(pending) > self.runner.max_active_jobs:
+        if active + len(to_submit) > self.runner.max_active_jobs:
             msg = (
                 f"{active} active job(s) + {len(pending)} new would exceed the "
                 f"{self.runner.max_active_jobs}-job scheduler cap; submit a "
@@ -581,6 +688,19 @@ class RewardEvaluator:
         handles: Dict[str, RewardRecord] = {}   # job_id -> record
         jobs: Dict[str, HPCJob] = {}            # job_id -> handle (for resubmit)
         for record in records:
+            if self._is_done(record):
+                continue
+            if record.status == STATUS_SUBMITTED and record.job_id:
+                # Resume: this job was submitted before the crash. Re-attach it.
+                # spec is not stored, so it cannot be resubmitted if it returns empty.
+                job = HPCJob(
+                    job_id=record.job_id, tag=record.tag, image="",
+                    job_name=f"{self.job_name_prefix}_{record.tag}",
+                )
+                handles[job.job_id] = record
+                jobs[job.job_id] = job
+                logger.info(f"[{record.tag}] re-attached to HPC job {job.job_id}")
+                continue
             if not record.has_method:
                 record.status = STATUS_GEN_FAILED
                 continue
@@ -593,6 +713,7 @@ class RewardEvaluator:
                 logger.error(f"[{tag}] reward injection failed: {e}")
                 record.status = STATUS_BUILD_FAILED
                 record.eval_error = f"injection: {e}"
+                self._notify(record)
                 continue
             try:
                 job = self.runner.submit(
@@ -612,6 +733,8 @@ class RewardEvaluator:
             record.status = STATUS_SUBMITTED
             handles[job.job_id] = record
             jobs[job.job_id] = job
+            # Save the job_id now: it is the only way to find this job after a crash.
+            self._notify(record)
 
         if not handles:
             logger.error("No candidates were submitted to the HPC scheduler")
@@ -668,6 +791,9 @@ class RewardEvaluator:
                 record.checkpoint_path = captured.checkpoint_path
                 record.status = "succeeded"
                 logger.info(f"[{record.tag}] completed and captured")
+            # Save once per poll cycle: finished jobs were just processed.
+            for record in handles.values():
+                self._notify(record)
             if outstanding:
                 time.sleep(self.poll_seconds)
 
