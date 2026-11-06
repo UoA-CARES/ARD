@@ -32,7 +32,7 @@ from tqdm import tqdm
 
 from src.refinement.llm_agent import EurekaAgent
 from src.evaluation import RewardEvaluator, FitnessScorer
-from src.reward_history import RewardHistory, STATUS_GENERATED, STATUS_GEN_FAILED, STATUS_VIDEO_FAILED, STATUS_VLM_FAILED
+from src.reward_history import RewardHistory, STATUS_GENERATED, STATUS_GEN_FAILED
 from src.vlm import VLM
 
 from src.run_state import save_state, load_state
@@ -93,16 +93,20 @@ def resolve_task_config(task_name, tasks_repo):
         f"Available: {available}"
     )
 
-def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg) -> Optional[dict]:
+def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg, save=None) -> Optional[dict]:
     """
     Get feedback from the VLM module for a reward candidate.
 
+    Recording and the VLM call are separate resumable stages: videos already on
+    disk are reused, and only the failed stage is retried. Neither stage touches
+    ``record.status``, which describes the training job alone.
+
     Args:
-        vlm: The VLM instance.
         evaluator: The RewardEvaluator instance.
         record: A candidate record from the refinement loop.
         task_cfg: The task configuration dictionary.
         refine_cfg: The refinement configuration dictionary.
+        save: Optional callable to persist progress after recording.
 
     Returns:
         The feedback dictionary from the VLM module, or None if feedback is not available.
@@ -123,22 +127,37 @@ def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg) -> Optional[dict]:
     camera_angle = agent_config.get("camera_angle", 0)
     target_suffix = f"camera_{camera_angle}.mp4"
 
+    max_video_attempts = int(agent_config.get("max_video_attempts", 2))
+
     try:
-        # Record the videos for the best candidate
-        video_paths = evaluator.record_videos(record)
-        record.video_paths = video_paths  # Store the recorded video paths in the best record
+        # --- Stage: record videos (skipped if a previous attempt left them on disk)
+        if record.videos_done:
+            video_paths = record.video_paths
+        else:
+            if record.video_attempts >= max_video_attempts:
+                record.video_error = f"gave up after {record.video_attempts} recording attempt(s)"
+                logger.error(f"[{record.tag}] {record.video_error}")
+                return None
+            record.video_attempts += 1
+            video_paths = evaluator.record_videos(record) or []
+            record.video_paths = video_paths
+            # Persist before the (slow) VLM call so a crash there keeps the videos.
+            if save:
+                save()
+
         # Search for the video path ending with the target suffix
         video_path = next(
             (path for path in video_paths if path.endswith(target_suffix)), None
         )
-        # Error check for video
         if video_path is None:
-            logger.warning(
-                f"Video with suffix '{target_suffix}' not found in available videos. "
-            )
-            record.status = STATUS_VIDEO_FAILED
+            if video_paths:
+                # Recorded, but not the camera we want: clear the paths so the next
+                # attempt re-records instead of videos_done skipping it forever.
+                record.video_error = f"no {target_suffix} among recorded videos"
+                record.video_paths = None
+            logger.warning(f"[{record.tag}] video '{target_suffix}' not available: {record.video_error}")
             return None
-        
+
         # Initialise VLM
         vlm = VLM(
             video_path=video_path,
@@ -151,7 +170,6 @@ def get_vlm_feedback(evaluator, record, task_cfg, refine_cfg) -> Optional[dict]:
     except Exception as e:
         logger.error(f"Error during VLM feedback: {e}")
         record.vlm_error = str(e)
-        record.status = STATUS_VLM_FAILED
         return None
 
     vlm.save_vlm_feedback(feedback["reasoning"], os.path.dirname(record.summary_path))  # Save feedback to the same directory as training_summary.txt
@@ -305,13 +323,19 @@ def run_refinement(settings, task_cfg, refine_cfg, resume_dir=None):
 
         # VLM call on every candidate
         for record in run_records:
-            vlm_feedback = get_vlm_feedback(evaluator, record, task_cfg, refine_cfg)
+            if record.vlm_done:
+                continue  # Resume: VLM feedback already exists for this candidate
+            vlm_feedback = get_vlm_feedback(
+                evaluator, record, task_cfg, refine_cfg, save=history.save_json
+            )
             if vlm_feedback:
                 logger.info(f"VLM feedback received for record {record.index}:\n{vlm_feedback}")
                 record.vlm_response = vlm_feedback["reasoning"]  # Store the VLM feedback in the record
                 record.vlm_score = vlm_feedback["score"]  # Store the VLM score in the record
             else:
                 logger.info(f"No VLM feedback received for record {record.index}.")
+            # Persist per candidate so a crash loses at most the one in flight.
+            history.save_json()
 
 
         scorer.score_all(run_records)

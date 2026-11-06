@@ -72,6 +72,7 @@ class RewardRecord:
     reward_method: Optional[str] = None  # extracted _get_rewards source
     gen_error: Optional[str] = None      # why generation failed, if it did
     vlm_error: Optional[str] = None      # why VLM feedback failed, if it did
+    video_error: Optional[str] = None    # why video recording failed, if it did
 
     # --- dispatch / evaluation (local runner / hpc scheduler) ---------------
     status: str = STATUS_PENDING
@@ -84,6 +85,7 @@ class RewardRecord:
     summary_path: Optional[str] = None   # human-readable scalar summary
     checkpoint_path: Optional[str] = None  # saved policy checkpoint (rl_games .pth)
     video_paths: Optional[list[str]] = None # path to the recorded videos (play.py output)
+    video_attempts: int = 0              # play.py recording attempts (capped, survives resume)
 
     # --- judgement (fitness scorer) -----------------------------------------
     fitness: float = field(default_factory=lambda: float("-inf"))
@@ -104,6 +106,16 @@ class RewardRecord:
     def succeeded(self) -> bool:
         """True if the job trained and produced a fitness we can score."""
         return self.status == "succeeded" and self.tb_path is not None
+
+    @property
+    def videos_done(self) -> bool:
+        """True if the job produced playable videos (play.py output)."""
+        return bool(self.video_paths) and all(os.path.exists(p) for p in self.video_paths)
+
+    @property
+    def vlm_done(self) -> bool:
+        """True if the job produced VLM feedback (VLM  feedback text is not empty)."""
+        return self.vlm_score is not None and self.vlm_response is not None
 
     def to_dict(self) -> Dict:
         """JSON-safe dict (non-finite fitness becomes null)."""
